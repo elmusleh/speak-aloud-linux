@@ -168,6 +168,7 @@ mkdir -p "$WORK_DIR"
 
 # ── Get text ──────────────────────────────────────────────────────────────────
 TEXT="${OVERRIDE_TEXT:-$(xsel -p)}"
+[ -z "$TEXT" ] && TEXT="$(xsel -b 2>/dev/null)"
 [ -z "$TEXT" ] && exit 0
 
 # Validate and sanitize input text
@@ -431,10 +432,6 @@ def classify_block(chunk):
     if not chunk:
         return []
 
-    # Umlauts are unambiguous German markers — short-circuit the whole block
-    if _has_umlaut(chunk):
-        return [('de', chunk)]
-
     # Split into sentences for finer-grained detection
     sentences = [s.strip() for s in SENT_RE.split(chunk) if s.strip()]
     if not sentences:
@@ -442,6 +439,11 @@ def classify_block(chunk):
 
     results = []
     for sent in sentences:
+        # Umlauts are unambiguous German markers — short-circuit this sentence only
+        if _has_umlaut(sent):
+            results.append(('de', sent))
+            continue
+
         words = re.findall(r'\b\w+\b', sent)
         if len(words) < 4:
             # Too short for langdetect — use minimal fallback list
@@ -936,10 +938,15 @@ if [ -n "$OVERRIDE_TEXT" ]; then
     while kill -0 "$MPV_PID" 2>/dev/null; do
         if [ -S "$MPV_SOCKET" ]; then
             if echo '{"command":["get_property","core-idle"]}' | socat - "$MPV_SOCKET" 2>/dev/null | grep -q '"data":true'; then
-                IDLE_COUNT=$((IDLE_COUNT + 1))
-                if [ "$IDLE_COUNT" -ge 2 ]; then
-                    echo '{"command":["quit"]}' | socat - "$MPV_SOCKET" 2>/dev/null >/dev/null
-                    break
+                # core-idle is true when paused AND when finished — distinguish them
+                if echo '{"command":["get_property","pause"]}' | socat - "$MPV_SOCKET" 2>/dev/null | grep -q '"data":true'; then
+                    IDLE_COUNT=0
+                else
+                    IDLE_COUNT=$((IDLE_COUNT + 1))
+                    if [ "$IDLE_COUNT" -ge 2 ]; then
+                        echo '{"command":["quit"]}' | socat - "$MPV_SOCKET" 2>/dev/null >/dev/null
+                        break
+                    fi
                 fi
             else
                 IDLE_COUNT=0
@@ -1115,10 +1122,15 @@ else
     while kill -0 "$MPV_PID" 2>/dev/null; do
         if [ -S "$MPV_SOCKET" ]; then
             if echo '{"command":["get_property","core-idle"]}' | socat - "$MPV_SOCKET" 2>/dev/null | grep -q '"data":true'; then
-                IDLE_COUNT=$((IDLE_COUNT + 1))
-                if [ "$IDLE_COUNT" -ge 2 ]; then
-                    echo '{"command":["quit"]}' | socat - "$MPV_SOCKET" 2>/dev/null >/dev/null
-                    break
+                # core-idle is true when paused AND when finished — distinguish them
+                if echo '{"command":["get_property","pause"]}' | socat - "$MPV_SOCKET" 2>/dev/null | grep -q '"data":true'; then
+                    IDLE_COUNT=0
+                else
+                    IDLE_COUNT=$((IDLE_COUNT + 1))
+                    if [ "$IDLE_COUNT" -ge 2 ]; then
+                        echo '{"command":["quit"]}' | socat - "$MPV_SOCKET" 2>/dev/null >/dev/null
+                        break
+                    fi
                 fi
             else
                 IDLE_COUNT=0
