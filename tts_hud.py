@@ -52,12 +52,27 @@ from PyQt6.QtWidgets import (
 )
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-CONFIG_DIR = os.path.expanduser('~/.config/tts_settings')
+import sys
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
+
+from tts_text_processor import (
+    CONFIG_DIR,
+    atomic_write_json,
+    atomic_write_text,
+    ensure_runtime_symlinks,
+    get_mpv_socket_path,
+    get_queue_path,
+    get_status_path,
+    get_work_dir,
+)
+
+ensure_runtime_symlinks()
 TEMP_DIR = os.environ.get('TMPDIR', '/tmp')
-WORK_DIR = os.path.join(TEMP_DIR, 'speak-aloud-work')
-MPV_SOCKET = os.path.join(TEMP_DIR, 'speak-aloud-mpv.sock')
-STATUS_FILE = os.path.join(TEMP_DIR, 'tts-status')
-QUEUE_FILE = os.path.join(TEMP_DIR, 'speak-aloud-queue.json')
+WORK_DIR = get_work_dir()
+MPV_SOCKET = get_mpv_socket_path()
+STATUS_FILE = get_status_path()
+QUEUE_FILE = get_queue_path()
 POSITIONS_FILE = os.path.join(CONFIG_DIR, 'ui_positions.json')
 
 # ── Lucide SVG Paths (matching obsidian-edge-tts icons) ───────────────────────
@@ -120,6 +135,11 @@ LUCIDE_SVGS: Dict[str, str] = {
     'clock': '<circle cx="12" cy="12" r="9" stroke="{color}" stroke-width="2" fill="none"/><polyline points="12 7 12 12 15 15" stroke="{color}" stroke-width="2" fill="none" stroke-linecap="round"/>',
     'loader-2': '<path d="M21 12a9 9 0 1 1-6.219-8.56" stroke="{color}" stroke-width="2.4" fill="none" stroke-linecap="round"/>',
     'alert-circle': '<circle cx="12" cy="12" r="9" stroke="{color}" stroke-width="2" fill="none"/><line x1="12" x2="12" y1="8" y2="12" stroke="{color}" stroke-width="2" stroke-linecap="round"/><line x1="12" x2="12.01" y1="16" y2="16" stroke="{color}" stroke-width="2" stroke-linecap="round"/>',
+    'scan': (
+        '<path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2" '
+        'stroke="{color}" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>'
+        '<line x1="7" x2="17" y1="12" y2="12" stroke="{color}" stroke-width="2" stroke-linecap="round"/>'
+    ),
 }
 
 _ICON_CACHE: Dict[Tuple[str, str, int], QIcon] = {}
@@ -217,6 +237,7 @@ class MPVTimelineController:
         self.chunks_meta: List[dict] = []
         self.chunk_durations: List[float] = []
         self.chunk_statuses: List[str] = []
+        self.active_segment_index: int = 0
         self.current_time: float = 0.0
         self.total_duration: float = 0.0
         self.is_playing: bool = False
@@ -347,6 +368,7 @@ class MPVTimelineController:
 
             prefix_dur = sum(self.chunk_durations[:seg_idx]) if seg_idx <= len(self.chunk_durations) else 0.0
             local_t = float(t_pos or 0.0)
+            self.active_segment_index = seg_idx
             self.current_time = min(self.total_duration, prefix_dur + local_t)
             self.had_active_session = True
         else:
@@ -355,6 +377,7 @@ class MPVTimelineController:
                 self.is_playing = False
                 self.is_paused = False
                 self.is_at_end = False
+                self.active_segment_index = 0
                 self.current_time = 0.0
                 self.had_active_session = True
             elif daemon_state == 'PLAYING':
@@ -372,6 +395,7 @@ class MPVTimelineController:
                 self.is_paused = True
                 if self.had_active_session and self.total_duration > 0 and completed_count > 0:
                     self.is_at_end = True
+                    self.active_segment_index = max(0, self.total_chunks - 1)
                     self.current_time = self.total_duration
 
         overall_pct = 0
@@ -399,9 +423,19 @@ class MPVTimelineController:
             'completed_chunks': completed_count,
             'failed_chunks': failed_count,
             'chunk_statuses': list(self.chunk_statuses),
+            'chunks_meta': list(self.chunks_meta),
+            'active_segment_index': self.active_segment_index,
             'overall_progress': overall_pct,
             'phase': phase,
         }
+
+    def jump_to_segment(self, seg_idx: int) -> None:
+        if not self.chunk_durations:
+            return
+        seg_idx = max(0, min(seg_idx, len(self.chunk_durations) - 1))
+        self.active_segment_index = seg_idx
+        target_time = sum(self.chunk_durations[:seg_idx])
+        self.seek_global(target_time)
 
     def _target_segment_and_offset(self, target_time: float) -> Tuple[int, float]:
         target_time = max(0.0, min(target_time, self.total_duration))
@@ -1046,6 +1080,9 @@ class FloatingPlayerWindow(QWidget):
         self.user_dismissed_session: str = ''
         self._spin_angle: int = 0
         self._chunks_completed_at: float = 0.0
+        self._transcript_session_id: str = ''
+        self._transcript_active_idx: int = -1
+        self._transcript_rows: List[QFrame] = []
 
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
@@ -1054,7 +1091,8 @@ class FloatingPlayerWindow(QWidget):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
-        self.setFixedWidth(368)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setFixedWidth(384)
 
         self._dragging = False
         self._drag_offset = QPoint(0, 0)
@@ -1105,11 +1143,22 @@ class FloatingPlayerWindow(QWidget):
         self.btn_enqueue.clicked.connect(self.queue_window.enqueue_current_selection)
         header_row.addWidget(self.btn_enqueue)
 
+        # Toggle Live Interactive Transcript (scroll-text)
+        self.btn_transcript = self._make_util_btn('scroll-text', 'Show / Hide Live Transcript (Hotkey: T)')
+        self.btn_transcript.setCheckable(True)
+        self.btn_transcript.clicked.connect(self._toggle_transcript)
+        header_row.addWidget(self.btn_transcript)
+
         # Toggle Queue Window (list-music)
-        self.btn_queue = self._make_util_btn('list-music', 'Show / Hide Playback Queue')
+        self.btn_queue = self._make_util_btn('list-music', 'Show / Hide Playback Queue (Hotkey: Q)')
         self.btn_queue.setCheckable(True)
         self.btn_queue.clicked.connect(self._toggle_queue_window)
         header_row.addWidget(self.btn_queue)
+
+        # OCR Screen Region Speak (scan)
+        self.btn_ocr = self._make_util_btn('scan', 'Read Screen Region via OCR (Hotkey: O)')
+        self.btn_ocr.clicked.connect(self._on_ocr_clicked)
+        header_row.addWidget(self.btn_ocr)
 
         # Save Audio as MP3 (download)
         self.btn_save = self._make_util_btn('download', 'Save spoken audio as MP3')
@@ -1249,6 +1298,41 @@ class FloatingPlayerWindow(QWidget):
 
         self.chunk_box.setVisible(False)
         deck_layout.addWidget(self.chunk_box)
+
+        # ── Row 6: Collapsible Interactive Transcript Drawer ──────────────────
+        self.transcript_box = QFrame(self.deck)
+        self.transcript_box.setObjectName('transcriptBox')
+        tb_layout = QVBoxLayout(self.transcript_box)
+        tb_layout.setContentsMargins(8, 8, 8, 8)
+        tb_layout.setSpacing(6)
+
+        tb_hdr = QHBoxLayout()
+        tb_hdr.setContentsMargins(2, 0, 2, 0)
+        self.lbl_transcript_hdr = QLabel('Live Transcript (click sentence to jump)')
+        self.lbl_transcript_hdr.setObjectName('transcriptHeader')
+        tb_hdr.addWidget(self.lbl_transcript_hdr)
+        tb_hdr.addStretch(1)
+        self.lbl_hotkey_hint = QLabel('Space · ←/→ · [/]')
+        self.lbl_hotkey_hint.setObjectName('hotkeyHint')
+        tb_hdr.addWidget(self.lbl_hotkey_hint)
+        tb_layout.addLayout(tb_hdr)
+
+        self.transcript_scroll = QScrollArea(self.transcript_box)
+        self.transcript_scroll.setObjectName('transcriptScroll')
+        self.transcript_scroll.setWidgetResizable(True)
+        self.transcript_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.transcript_scroll.setFixedHeight(130)
+
+        self.transcript_list_widget = QWidget()
+        self.transcript_list_widget.setObjectName('transcriptListWidget')
+        self.transcript_list_layout = QVBoxLayout(self.transcript_list_widget)
+        self.transcript_list_layout.setContentsMargins(2, 2, 2, 2)
+        self.transcript_list_layout.setSpacing(4)
+        self.transcript_scroll.setWidget(self.transcript_list_widget)
+        tb_layout.addWidget(self.transcript_scroll)
+
+        self.transcript_box.setVisible(False)
+        deck_layout.addWidget(self.transcript_box)
 
         outer.addWidget(self.deck)
 
@@ -1447,6 +1531,48 @@ class FloatingPlayerWindow(QWidget):
                 font-weight: 600;
                 padding: 1px 5px;
             }
+            #transcriptBox {
+                background-color: #111318;
+                border: 1px solid rgba(255, 255, 255, 0.07);
+                border-radius: 8px;
+            }
+            #transcriptHeader {
+                color: #A5B4FC;
+                font-size: 10px;
+                font-weight: 600;
+            }
+            #hotkeyHint {
+                color: #6B7280;
+                font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace;
+                font-size: 9px;
+            }
+            #transcriptScroll, #transcriptListWidget {
+                background: transparent;
+                border: none;
+            }
+            QFrame.transcriptRow {
+                background-color: #181B24;
+                border: 1px solid rgba(255, 255, 255, 0.05);
+                border-radius: 6px;
+            }
+            QFrame.transcriptRow:hover {
+                background-color: #222634;
+                border-color: rgba(255, 255, 255, 0.14);
+            }
+            QFrame.transcriptRowActive {
+                background-color: rgba(99, 102, 241, 0.18);
+                border: 1px solid #6366F1;
+                border-radius: 6px;
+            }
+            QLabel.transcriptText {
+                color: #D1D5DB;
+                font-size: 11px;
+            }
+            QLabel.transcriptTextActive {
+                color: #FFFFFF;
+                font-size: 11px;
+                font-weight: 600;
+            }
         """)
 
     def _make_util_btn(self, icon_name: str, tooltip: str) -> QPushButton:
@@ -1493,8 +1619,8 @@ class FloatingPlayerWindow(QWidget):
                 self.queue_window._rebuild_list()
 
         # Auto-show floating player when active or in replay state (if enabled in settings)
-        show_pref = read_bool_config('show_floating_player', True)
-        replay_pref = read_bool_config('enable_replay', True)
+        show_pref = read_bool_config('show_hud', read_bool_config('show_floating_player', True))
+        replay_pref = read_bool_config('replay_at_end', read_bool_config('enable_replay', True))
 
         is_active = daemon_state in ('GENERATING', 'RETRYING', 'PLAYING', 'PAUSED') or data['is_playing']
         should_stay_for_replay = replay_pref and data['is_at_end'] and sid != '' and sid != self.user_dismissed_session
@@ -1596,7 +1722,60 @@ class FloatingPlayerWindow(QWidget):
                     self.chunk_box.setVisible(False)
                     self.adjustSize()
 
+        # Sync Interactive Transcript Drawer if visible
+        if self.transcript_box.isVisible():
+            self._sync_transcript(sid, data.get('chunks_meta', []), data.get('active_segment_index', 0))
+
         self.adjustSize()
+
+    def _sync_transcript(self, session_id: str, chunks_meta: List[dict], active_idx: int):
+        if session_id != self._transcript_session_id or len(self._transcript_rows) != len(chunks_meta):
+            self._transcript_session_id = session_id
+            self._transcript_active_idx = -1
+            self._transcript_rows.clear()
+            while self.transcript_list_layout.count():
+                child = self.transcript_list_layout.takeAt(0)
+                if child.widget():
+                    child.widget().deleteLater()
+
+            for idx, cmeta in enumerate(chunks_meta):
+                row = QFrame()
+                row.setProperty('class', 'transcriptRow')
+                row.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+                rl = QHBoxLayout(row)
+                rl.setContentsMargins(7, 5, 7, 5)
+                rl.setSpacing(6)
+
+                lang_tag = str(cmeta.get('lang', 'en')).upper()
+                txt = str(cmeta.get('text', '')).strip()
+                snippet = txt if len(txt) <= 85 else txt[:82].rstrip() + '…'
+                lbl = QLabel(f'{idx + 1}. [{lang_tag}] {snippet}')
+                lbl.setObjectName(f'transcriptLbl_{idx}')
+                lbl.setProperty('class', 'transcriptText')
+                lbl.setWordWrap(True)
+                lbl.setToolTip(txt)
+                rl.addWidget(lbl, 1)
+
+                row.mousePressEvent = lambda e, i=idx: (
+                    self.controller.jump_to_segment(i) if e.button() == Qt.MouseButton.LeftButton else None
+                )
+                self.transcript_list_layout.addWidget(row)
+                self._transcript_rows.append(row)
+            self.transcript_list_layout.addStretch(1)
+
+        if active_idx != self._transcript_active_idx and 0 <= active_idx < len(self._transcript_rows):
+            self._transcript_active_idx = active_idx
+            for idx, row in enumerate(self._transcript_rows):
+                is_act = (idx == active_idx)
+                row.setProperty('class', 'transcriptRowActive' if is_act else 'transcriptRow')
+                row.style().unpolish(row)
+                row.style().polish(row)
+                lbl = row.findChild(QLabel)
+                if lbl is not None:
+                    lbl.setProperty('class', 'transcriptTextActive' if is_act else 'transcriptText')
+                    lbl.style().unpolish(lbl)
+                    lbl.style().polish(lbl)
+            self.transcript_scroll.ensureWidgetVisible(self._transcript_rows[active_idx], 0, 24)
 
     def _sync_chunk_pills(self, statuses: List[str]):
         while self.chunk_pills_layout.count():
@@ -1733,6 +1912,39 @@ class FloatingPlayerWindow(QWidget):
                 dest += '.mp3'
             self.controller.export_mp3(dest)
 
+    def _step_speed(self, direction: int):
+        cur = self.controller.speed
+        idx = 0
+        best_diff = 999.0
+        for i, s in enumerate(self.SPEED_STEPS):
+            if abs(s - cur) < best_diff:
+                best_diff = abs(s - cur)
+                idx = i
+        new_idx = max(0, min(len(self.SPEED_STEPS) - 1, idx + direction))
+        next_speed = self.SPEED_STEPS[new_idx]
+        self.controller.set_speed(next_speed)
+        self.btn_speed.setText(f'{next_speed:g}x')
+
+    def _toggle_transcript(self):
+        vis = not self.transcript_box.isVisible()
+        self.transcript_box.setVisible(vis)
+        self.btn_transcript.setChecked(vis)
+        if vis:
+            self._sync_transcript(
+                self.controller.session_id,
+                self.controller.chunks_meta,
+                self.controller.active_segment_index,
+            )
+        self.adjustSize()
+
+    def _on_ocr_clicked(self):
+        subprocess.Popen(
+            ['bash', os.path.join(SCRIPT_DIR, 'speak.sh'), '--ocr'],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
     def _on_open_settings(self):
         if subprocess.run(['pgrep', '-f', 'tts-settings'], capture_output=True).returncode == 0:
             return
@@ -1742,8 +1954,55 @@ class FloatingPlayerWindow(QWidget):
             stderr=subprocess.DEVNULL,
         )
 
+    def keyPressEvent(self, event):
+        key = event.key()
+        mods = event.modifiers()
+        shift = bool(mods & Qt.KeyboardModifier.ShiftModifier)
+        if key in (Qt.Key.Key_Space, Qt.Key.Key_K):
+            self._on_hero_clicked()
+            event.accept()
+            return
+        if key in (Qt.Key.Key_Left, Qt.Key.Key_J):
+            self.controller.jump_backward(10.0 if shift else 5.0)
+            event.accept()
+            return
+        if key in (Qt.Key.Key_Right, Qt.Key.Key_L):
+            self.controller.jump_forward(10.0 if shift else 5.0)
+            event.accept()
+            return
+        if key in (Qt.Key.Key_BracketLeft, Qt.Key.Key_Minus):
+            self._step_speed(-1)
+            event.accept()
+            return
+        if key in (Qt.Key.Key_BracketRight, Qt.Key.Key_Plus, Qt.Key.Key_Equal):
+            self._step_speed(1)
+            event.accept()
+            return
+        if key == Qt.Key.Key_T:
+            self._toggle_transcript()
+            event.accept()
+            return
+        if key == Qt.Key.Key_Q:
+            self._toggle_queue_window()
+            event.accept()
+            return
+        if key == Qt.Key.Key_O:
+            self._on_ocr_clicked()
+            event.accept()
+            return
+        if key == Qt.Key.Key_S:
+            self._on_stop_clicked()
+            event.accept()
+            return
+        if key == Qt.Key.Key_Escape:
+            self._on_close_clicked()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
+            self.setFocus(Qt.FocusReason.MouseFocusReason)
             child = self.childAt(event.pos())
             if isinstance(child, (QPushButton, QSlider)):
                 super().mousePressEvent(event)

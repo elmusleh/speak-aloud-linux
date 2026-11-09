@@ -36,7 +36,17 @@ from PyQt6.QtWidgets import (
 )
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-CONFIG_DIR = os.path.expanduser('~/.config/tts_settings')
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
+
+from tts_text_processor import (
+    CONFIG_DIR,
+    TTSSettingsStore,
+    atomic_write_text,
+    load_lexicon,
+    save_lexicon,
+)
+
 CACHE_DIR = os.path.expanduser('~/.cache/speak-aloud')
 SHARED_JSON = os.path.join(SCRIPT_DIR, 'tts-shared.json')
 POSITIONS_FILE = os.path.join(CONFIG_DIR, 'ui_positions.json')
@@ -73,9 +83,7 @@ def read_int_cfg(name: str, default: int = 0, strip_chars: str = '+%') -> int:
 
 
 def write_cfg(name: str, value: str) -> None:
-    os.makedirs(CONFIG_DIR, exist_ok=True)
-    with open(os.path.join(CONFIG_DIR, name), 'w', encoding='utf-8') as f:
-        f.write(str(value).strip() + '\n')
+    atomic_write_text(os.path.join(CONFIG_DIR, name), str(value).strip() + '\n')
 
 
 class TTSSettingsWindow(QDialog):
@@ -367,6 +375,14 @@ class TTSSettingsWindow(QDialog):
         self.chk_replace_symbols = QCheckBox('Speak comparison & math symbols naturally (>=, <=, 320x240, ≈)')
         layout.addWidget(self.chk_replace_symbols)
 
+        self.chk_use_lexicon = QCheckBox('Apply Custom Pronunciation Lexicon (kubectl → kube control, PyQt6 → Pie Cute 6)')
+        layout.addWidget(self.chk_use_lexicon)
+
+        self.txt_lexicon = QPlainTextEdit()
+        self.txt_lexicon.setPlaceholderText('term = spoken alias (one per line, e.g. kubectl = kube control)')
+        self.txt_lexicon.setMaximumHeight(68)
+        layout.addWidget(self.txt_lexicon)
+
         sec3 = QLabel('Cadence & Punctuation Pauses')
         sec3.setProperty('class', 'sectionHeader')
         layout.addWidget(sec3)
@@ -444,6 +460,11 @@ class TTSSettingsWindow(QDialog):
         btn_export_mp3.setObjectName('secondaryBtn')
         btn_export_mp3.clicked.connect(self._on_bench_export)
         bench_btns.addWidget(btn_export_mp3)
+
+        btn_ocr_region = QPushButton('📷  OCR Screen Region')
+        btn_ocr_region.setObjectName('secondaryBtn')
+        btn_ocr_region.clicked.connect(self._on_bench_ocr)
+        bench_btns.addWidget(btn_ocr_region)
         bench_btns.addStretch(1)
         layout.addLayout(bench_btns)
 
@@ -520,47 +541,96 @@ class TTSSettingsWindow(QDialog):
             spd = 1.0
         self.sl_speed.setValue(max(50, min(200, int(round(spd * 100)))))
 
-        self.chk_show_player.setChecked(read_bool_cfg('show_floating_player', True))
-        self.chk_enable_replay.setChecked(read_bool_cfg('enable_replay', True))
+        self.chk_show_player.setChecked(read_bool_cfg('show_hud', read_bool_cfg('show_floating_player', True)))
+        self.chk_enable_replay.setChecked(read_bool_cfg('replay_at_end', read_bool_cfg('enable_replay', True)))
         self.chk_filter_md.setChecked(read_bool_cfg('filter_markdown', True))
         self.chk_filter_urls.setChecked(read_bool_cfg('filter_urls', True))
-        self.chk_filter_code.setChecked(read_bool_cfg('filter_code', False))
+        self.chk_filter_code.setChecked(read_bool_cfg('skip_code', read_bool_cfg('filter_code', False)))
         self.chk_replace_symbols.setChecked(read_bool_cfg('replace_symbols', True))
+        self.chk_use_lexicon.setChecked(read_bool_cfg('use_lexicon', True))
+        lex = load_lexicon()
+        self.txt_lexicon.setPlainText('\n'.join(f'{k} = {v}' for k, v in lex.items()))
         self.chk_pause_punct.setChecked(read_bool_cfg('pause_punctuation', False))
-        self.sp_pause_delay.setValue(max(0, min(2000, read_int_cfg('pause_delay_ms', 100, strip_chars=''))))
+        self.sp_pause_delay.setValue(max(0, min(2000, read_int_cfg('pause_delay', read_int_cfg('pause_delay_ms', 100, strip_chars=''), strip_chars=''))))
 
         self.chk_trans_enabled.setChecked(read_bool_cfg('translate_enabled', False))
         self._set_combo_by_data(self.cb_trans_provider, read_cfg('translate_provider', 'deepl'))
-        self._set_combo_by_data(self.cb_trans_target, read_cfg('translate_target', ''))
+        self._set_combo_by_data(self.cb_trans_target, read_cfg('translate_to', read_cfg('translate_target', '')))
         self.ed_trans_key.setText(read_cfg('translate_api_key', ''))
 
     def _save_all(self):
         en_v = self.ed_custom_voice.text().strip() or self.cb_en_voice.currentData()
         ar_v = self.cb_ar_voice.currentData()
         de_v = self.cb_de_voice.currentData()
+        en_rate = f'+{self.sl_en_rate.value()}%'
+        ar_rate = f'+{self.sl_ar_rate.value()}%'
+        de_rate = f'+{self.sl_de_rate.value()}%'
+        src_lang = self.cb_source_lang.currentData() or 'auto'
+        spd_str = f'{self.sl_speed.value() / 100.0:.2f}'
+        show_hud = 'yes' if self.chk_show_player.isChecked() else 'no'
+        replay = 'yes' if self.chk_enable_replay.isChecked() else 'no'
+        f_md = 'yes' if self.chk_filter_md.isChecked() else 'no'
+        f_urls = 'yes' if self.chk_filter_urls.isChecked() else 'no'
+        f_code = 'yes' if self.chk_filter_code.isChecked() else 'no'
+        r_sym = 'yes' if self.chk_replace_symbols.isChecked() else 'no'
+        u_lex = 'yes' if self.chk_use_lexicon.isChecked() else 'no'
+        p_punct = 'yes' if self.chk_pause_punct.isChecked() else 'no'
+        p_delay = str(self.sp_pause_delay.value())
+        t_en = 'yes' if self.chk_trans_enabled.isChecked() else 'no'
+        t_prov = self.cb_trans_provider.currentData() or 'deepl'
+        t_targ = self.cb_trans_target.currentData() or 'en'
+        t_key = self.ed_trans_key.text().strip()
 
+        # Validate and atomically write settings.json + schema keys
+        store = TTSSettingsStore()
+        store.save({
+            'voice_en': en_v,
+            'voice_ar': ar_v,
+            'voice_de': de_v,
+            'custom_voice': self.ed_custom_voice.text().strip(),
+            'rate_en': en_rate,
+            'rate_ar': ar_rate,
+            'rate_de': de_rate,
+            'global_speed': spd_str,
+            'show_hud': show_hud,
+            'replay_at_end': replay,
+            'filter_markdown': f_md,
+            'filter_urls': f_urls,
+            'skip_code': f_code,
+            'replace_symbols': r_sym,
+            'use_lexicon': u_lex,
+            'pause_punctuation': p_punct,
+            'pause_delay': p_delay,
+            'translate_enabled': t_en,
+            'translate_provider': t_prov,
+            'translate_to': t_targ,
+            'translate_from': src_lang,
+            'translate_api_key': t_key,
+        })
+
+        # Also maintain legacy flat filenames for backward compatibility
         write_cfg('voice', en_v)
         write_cfg('arabic_voice', ar_v)
         write_cfg('german_voice', de_v)
-        write_cfg('rate', f'+{self.sl_en_rate.value()}%')
-        write_cfg('arabic_rate', f'+{self.sl_ar_rate.value()}%')
-        write_cfg('german_rate', f'+{self.sl_de_rate.value()}%')
-        write_cfg('source_language', self.cb_source_lang.currentData() or 'auto')
-        write_cfg('global_speed', f'{self.sl_speed.value() / 100.0:.2f}')
-
-        write_cfg('show_floating_player', 'yes' if self.chk_show_player.isChecked() else 'no')
-        write_cfg('enable_replay', 'yes' if self.chk_enable_replay.isChecked() else 'no')
-        write_cfg('filter_markdown', 'yes' if self.chk_filter_md.isChecked() else 'no')
-        write_cfg('filter_urls', 'yes' if self.chk_filter_urls.isChecked() else 'no')
-        write_cfg('filter_code', 'yes' if self.chk_filter_code.isChecked() else 'no')
-        write_cfg('replace_symbols', 'yes' if self.chk_replace_symbols.isChecked() else 'no')
-        write_cfg('pause_punctuation', 'yes' if self.chk_pause_punct.isChecked() else 'no')
-        write_cfg('pause_delay_ms', str(self.sp_pause_delay.value()))
-
-        write_cfg('translate_enabled', 'yes' if self.chk_trans_enabled.isChecked() else 'no')
-        write_cfg('translate_provider', self.cb_trans_provider.currentData() or 'deepl')
+        write_cfg('rate', en_rate)
+        write_cfg('arabic_rate', ar_rate)
+        write_cfg('german_rate', de_rate)
+        write_cfg('source_language', src_lang)
+        write_cfg('show_floating_player', show_hud)
+        write_cfg('enable_replay', replay)
+        write_cfg('filter_code', f_code)
+        write_cfg('pause_delay_ms', p_delay)
         write_cfg('translate_target', self.cb_trans_target.currentData() or '')
-        write_cfg('translate_api_key', self.ed_trans_key.text().strip())
+
+        # Save lexicon.json atomically
+        lex_map = {}
+        for line in self.txt_lexicon.toPlainText().splitlines():
+            if '=' in line:
+                k, v = line.split('=', 1)
+                if k.strip() and v.strip():
+                    lex_map[k.strip()] = v.strip()
+        if lex_map:
+            save_lexicon(lex_map)
 
     def _on_save(self):
         self._save_all()
@@ -628,6 +698,16 @@ class TTSSettingsWindow(QDialog):
                 stderr=subprocess.DEVNULL,
             )
             self.lbl_status.setText(f'⟳ Generating MP3 to {os.path.basename(dest)}…')
+
+    def _on_bench_ocr(self):
+        self._save_all()
+        self.lbl_status.setText('📷 Drag a rectangle on screen to read via OCR…')
+        subprocess.Popen(
+            ['bash', os.path.join(SCRIPT_DIR, 'speak.sh'), '--ocr'],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
 
     def _reset_positions(self):
         try:

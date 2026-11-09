@@ -1,0 +1,16 @@
+[Unit]
+Description=Speak a Loud Universal — Tray, Floating HUD & Async TTS Synthesis Daemon
+Documentation=file://%h/dev/tts/speak-aloud-linux/README.md
+After=graphical-session.target pipewire.service pulseaudio.service
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/dev/tts/speak-aloud-linux
+ExecStart=/usr/bin/python3 %h/dev/tts/speak-aloud-linux/tts-daemon.py
+Restart=on-failure
+RestartSec=2
+Environment="PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+[Install]
+WantedBy=graphical-session.target default.target

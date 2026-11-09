@@ -29,10 +29,19 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
-TEMP_DIR = os.environ.get('TMPDIR', '/tmp')
-STATUS_FILE = os.path.join(TEMP_DIR, 'tts-status')
-LOCK_FILE = os.path.join(TEMP_DIR, 'tts-daemon.lock')
-MPV_SOCKET = os.path.join(TEMP_DIR, 'speak-aloud-mpv.sock')
+from tts_text_processor import (
+    ensure_runtime_symlinks,
+    get_mpv_socket_path,
+    get_runtime_dir,
+    get_status_path,
+)
+from tts_synth_worker import start_synth_server_thread
+
+ensure_runtime_symlinks()
+RUNTIME_DIR = get_runtime_dir()
+STATUS_FILE = get_status_path()
+LOCK_FILE = os.path.join(RUNTIME_DIR, 'daemon.lock')
+MPV_SOCKET = get_mpv_socket_path()
 LOG_DIR = os.path.expanduser('~/.local/share/speak-aloud')
 LOG_FILE = os.path.join(LOG_DIR, 'daemon.log')
 
@@ -125,7 +134,11 @@ class QtTTSDaemon:
 
         self.log = _setup_logging()
         self._lock_fd = _acquire_lock(self.log)
-        self.log.info('QtTTSDaemon started (PID %d)', os.getpid())
+        self.log.info('QtTTSDaemon started (PID %d, runtime=%s)', os.getpid(), RUNTIME_DIR)
+
+        # Start persistent async edge_tts synthesis worker thread on synth.sock
+        self.synth_thread = start_synth_server_thread()
+        self.log.info('AsyncSynthServer started on UNIX socket')
 
         self.app = QApplication(sys.argv)
         self.app.setQuitOnLastWindowClosed(False)
@@ -195,6 +208,9 @@ class QtTTSDaemon:
         act_speak = menu.addAction('Speak Selection (Super+S)')
         act_speak.triggered.connect(lambda: self._run('speak.sh'))
 
+        act_ocr = menu.addAction('Read Screen Region via OCR…')
+        act_ocr.triggered.connect(self.player_window._on_ocr_clicked)
+
         act_queue_add = menu.addAction('Add Selection to Queue')
         act_queue_add.triggered.connect(self.queue_window.enqueue_current_selection)
 
@@ -202,6 +218,9 @@ class QtTTSDaemon:
 
         act_player = menu.addAction('Show / Hide Floating Player')
         act_player.triggered.connect(self._toggle_player)
+
+        act_transcript = menu.addAction('Show / Hide Live Transcript')
+        act_transcript.triggered.connect(self._toggle_transcript_from_tray)
 
         act_queue = menu.addAction('Show / Hide Playback Queue')
         act_queue.triggered.connect(self.player_window._toggle_queue_window)
@@ -247,6 +266,13 @@ class QtTTSDaemon:
             self.player_window.user_dismissed_session = ''
             self.player_window.show()
             self.player_window.raise_()
+
+    def _toggle_transcript_from_tray(self):
+        if not self.player_window.isVisible():
+            self.player_window.user_dismissed_session = ''
+            self.player_window.show()
+            self.player_window.raise_()
+        self.player_window._toggle_transcript()
 
     def _reset_player_position(self):
         from PyQt6.QtWidgets import QApplication

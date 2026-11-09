@@ -1,10 +1,17 @@
 #!/bin/bash
 
 # Toggle pause/resume for currently playing TTS audio
-# Use system temp directory for portability
 TEMP_DIR="${TMPDIR:-/tmp}"
-SOCKET="$TEMP_DIR/speak-aloud-mpv.sock"
-STATUS_FILE="$TEMP_DIR/tts-status"
+USER_UID="$(id -u)"
+if [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -d "${XDG_RUNTIME_DIR}" ] && [ -w "${XDG_RUNTIME_DIR}" ]; then
+    RUNTIME_DIR="${XDG_RUNTIME_DIR}/speak-aloud-${USER_UID}"
+else
+    RUNTIME_DIR="${TEMP_DIR}/speak-aloud-${USER_UID}"
+fi
+
+SOCKET="$RUNTIME_DIR/mpv.sock"
+[ -S "$SOCKET" ] || SOCKET="$TEMP_DIR/speak-aloud-mpv.sock"
+STATUS_FILE="$RUNTIME_DIR/status"
 [ -S "$SOCKET" ] || exit 0
 
 # Toggle pause in mpv

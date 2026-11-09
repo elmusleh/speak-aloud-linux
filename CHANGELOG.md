@@ -2,6 +2,12 @@
 
 ## 2026-11-09
 
+- **Per-User `0700` Runtime Directory (`$XDG_RUNTIME_DIR/speak-aloud-$UID`)**: Isolated all IPC sockets (`mpv.sock`, `synth.sock`), lock files, queues, and segment work directories in `$XDG_RUNTIME_DIR/speak-aloud-$UID` (`0700`) with backward-compatible user-owned `/tmp` symlinks.
+- **Persistent Async Synthesis Worker & Local Piper Neural Fallback (`tts_synth_worker.py`)**: Added a persistent UNIX-socket `asyncio` synthesis server inside `tts-daemon.py` (`synth.sock`) using `edge_tts.Communicate` in memory, with automatic fallback to local `piper-tts` ONNX neural models and `espeak-ng`.
+- **Systemd User Service (`speak-aloud-daemon.service`)**: Added and enabled `~/.config/systemd/user/speak-aloud-daemon.service` with `Restart=on-failure`.
+- **Interactive Sentence Transcript Drawer & HUD Hotkeys (`tts_hud.py`)**: Added a collapsible live Transcript drawer in `FloatingPlayerWindow` that highlights/auto-scrolls the active sentence and jumps on click, plus full keyboard hotkeys (`Space`, `←`/`→`, `[`/`]`, `T`, `Q`, `O`, `S`, `Esc`).
+- **OCR Screen-Region & Image Speak Mode (`tts_ocr.py`, `speak.sh --ocr`)**: Added PyQt6 rubber-band screen-region capture and `--ocr-image` extraction via `tesseract`, accessible from CLI, Floating HUD, Tray menu, and Settings Studio.
+- **Schema-Validated Atomic Settings & Pronunciation Lexicon (`TTSSettingsStore`, `lexicon.json`)**: Added strict schema validation, atomic `tempfile` + `os.replace` writes to `~/.config/tts_settings/settings.json`, and a customizable pronunciation dictionary (`kubectl`, `PyQt6`, `nginx`, etc.) with a GUI editor in `tts-settings.py`.
 - **Floating On-Screen Player HUD (`tts_hud.py`, `tts-daemon.py`)**: Added an always-on-top, draggable dark-slate player popup inspired by `obsidian-edge-tts` (`FloatingPlayerUI`), featuring a unified cross-segment timeline seek bar, elapsed/total timecodes, Play/Pause/Replay, Jump `-10s`/`+10s`, Stop, live Speed selector pill (`0.75x`–`2.0x`), and one-click Save MP3.
 - **Chunked Generation Progress (`ChunkedProgressUI`)**: Added real-time chunk synthesis progress bar and per-chunk status pills (`1 ✓`, `2 ⟳`, `3 ○`) backed by `/tmp/speak-aloud-work/manifest.json` and `seg_XXX.status`.
 - **Playback Queue Manager (`QueueManagerUI`)**: Added a draggable companion Queue window and `speak.sh --queue` flag to enqueue selections, reorder items, loop, and auto-advance through queued passages.

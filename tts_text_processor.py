@@ -15,8 +15,378 @@ import json
 import os
 import re
 import sys
+import tempfile
 import time
 import unicodedata
+from typing import Any, Dict, Optional
+
+# ── Runtime Directory & Paths ($XDG_RUNTIME_DIR/speak-aloud-$UID) ─────────────
+
+CONFIG_DIR = os.path.expanduser('~/.config/tts_settings')
+SETTINGS_JSON_PATH = os.path.join(CONFIG_DIR, 'settings.json')
+LEXICON_JSON_PATH = os.path.join(CONFIG_DIR, 'lexicon.json')
+
+
+def get_runtime_dir() -> str:
+    """Return per-user 0700 runtime directory (${XDG_RUNTIME_DIR:-/tmp}/speak-aloud-$UID)."""
+    uid = os.getuid()
+    base = os.environ.get('XDG_RUNTIME_DIR') or '/tmp'
+    if not os.path.isdir(base) or not os.access(base, os.W_OK):
+        base = '/tmp'
+    rdir = os.path.join(base, f'speak-aloud-{uid}')
+    os.makedirs(rdir, mode=0o700, exist_ok=True)
+    try:
+        os.chmod(rdir, 0o700)
+    except OSError:
+        pass
+    return rdir
+
+
+def get_work_dir() -> str:
+    wdir = os.path.join(get_runtime_dir(), 'work')
+    os.makedirs(wdir, mode=0o700, exist_ok=True)
+    return wdir
+
+
+def get_mpv_socket_path() -> str:
+    return os.path.join(get_runtime_dir(), 'mpv.sock')
+
+
+def get_synth_socket_path() -> str:
+    return os.path.join(get_runtime_dir(), 'synth.sock')
+
+
+def get_status_path() -> str:
+    return os.path.join(get_runtime_dir(), 'status')
+
+
+def get_pid_path() -> str:
+    return os.path.join(get_runtime_dir(), 'pid')
+
+
+def get_queue_path() -> str:
+    return os.path.join(get_runtime_dir(), 'queue.json')
+
+
+def get_queue_state_path() -> str:
+    return os.path.join(get_runtime_dir(), 'queue_state.json')
+
+
+def ensure_runtime_symlinks() -> None:
+    """Maintain user-owned symlinks in /tmp for backward compatibility."""
+    uid = os.getuid()
+    links = {
+        '/tmp/speak-aloud-work': get_work_dir(),
+        '/tmp/speak-aloud-mpv.sock': get_mpv_socket_path(),
+        '/tmp/speak-aloud-synth.sock': get_synth_socket_path(),
+        '/tmp/speak-aloud-status': get_status_path(),
+        '/tmp/speak-aloud.pid': get_pid_path(),
+        '/tmp/speak-aloud-queue.json': get_queue_path(),
+        '/tmp/speak-aloud-queue-state.json': get_queue_state_path(),
+    }
+    for legacy_path, target_path in links.items():
+        if os.path.abspath(legacy_path) == os.path.abspath(target_path):
+            continue
+        try:
+            if os.path.islink(legacy_path):
+                st = os.lstat(legacy_path)
+                if st.st_uid == uid:
+                    if os.readlink(legacy_path) != target_path:
+                        os.unlink(legacy_path)
+                        os.symlink(target_path, legacy_path)
+                continue
+            if os.path.exists(legacy_path):
+                st = os.lstat(legacy_path)
+                if st.st_uid != uid:
+                    continue
+                if os.path.isdir(legacy_path):
+                    import shutil
+                    shutil.rmtree(legacy_path, ignore_errors=True)
+                else:
+                    os.unlink(legacy_path)
+            os.symlink(target_path, legacy_path)
+        except OSError:
+            pass
+
+
+# ── Atomic File & JSON Helpers ────────────────────────────────────────────────
+
+def atomic_write_text(path: str, content: str, mode: int = 0o600) -> None:
+    """Atomically write text to `path` via tempfile + fsync + os.replace."""
+    parent = os.path.dirname(os.path.abspath(path))
+    os.makedirs(parent, mode=0o700, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(prefix='.tmp_', dir=parent, text=True)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        try:
+            os.chmod(tmp_path, mode)
+        except OSError:
+            pass
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def atomic_write_json(path: str, data: Any, mode: int = 0o600) -> None:
+    """Atomically serialize `data` as JSON to `path`."""
+    text = json.dumps(data, ensure_ascii=False, indent=2) + '\n'
+    atomic_write_text(path, text, mode=mode)
+
+
+# ── Pronunciation Lexicon / Custom Alias Dictionary ───────────────────────────
+
+DEFAULT_LEXICON: Dict[str, str] = {
+    'kubectl': 'kube control',
+    'PyQt6': 'Pie Cute 6',
+    'PyQt5': 'Pie Cute 5',
+    'nginx': 'engine X',
+    'SQLite': 'S Q Lite',
+    'PostgreSQL': 'Postgres Q L',
+    'MySQL': 'My S Q L',
+    'systemd': 'system D',
+    'journalctl': 'journal control',
+    'systemctl': 'system control',
+    'FastAPI': 'Fast A P I',
+    'WebSocket': 'Web Socket',
+    'stdio': 'standard I O',
+    'stdin': 'standard in',
+    'stdout': 'standard out',
+    'stderr': 'standard error',
+    'regex': 'reg-ex',
+    'mpv': 'M P V',
+    'xclip': 'X clip',
+    'xdotool': 'X do tool',
+    'PipeWire': 'Pipe Wire',
+    'PulseAudio': 'Pulse Audio',
+}
+
+
+def load_lexicon(config_dir: Optional[str] = None) -> Dict[str, str]:
+    """Load pronunciation lexicon from lexicon.json, initializing defaults if missing."""
+    cdir = config_dir or CONFIG_DIR
+    lpath = os.path.join(cdir, 'lexicon.json')
+    if not os.path.exists(lpath):
+        try:
+            atomic_write_json(lpath, DEFAULT_LEXICON)
+        except OSError:
+            pass
+        return dict(DEFAULT_LEXICON)
+    try:
+        with open(lpath, 'r', encoding='utf-8') as f:
+            raw = json.load(f)
+        if not isinstance(raw, dict):
+            return dict(DEFAULT_LEXICON)
+        cleaned: Dict[str, str] = {}
+        for k, v in raw.items():
+            ks = str(k).strip()
+            vs = str(v).strip()
+            if ks and vs and len(ks) <= 80 and len(vs) <= 160:
+                cleaned[ks] = vs
+        return cleaned
+    except Exception:
+        return dict(DEFAULT_LEXICON)
+
+
+def save_lexicon(mapping: Dict[str, str], config_dir: Optional[str] = None) -> Dict[str, str]:
+    """Validate and atomically save pronunciation lexicon to lexicon.json."""
+    cdir = config_dir or CONFIG_DIR
+    lpath = os.path.join(cdir, 'lexicon.json')
+    cleaned: Dict[str, str] = {}
+    for k, v in (mapping or {}).items():
+        ks = CTRL_CHARS_RE.sub('', str(k)).strip()
+        vs = CTRL_CHARS_RE.sub('', str(v)).strip()
+        if ks and vs and len(ks) <= 80 and len(vs) <= 160:
+            cleaned[ks] = vs
+    atomic_write_json(lpath, cleaned)
+    return cleaned
+
+
+def apply_lexicon(text: str, lexicon: Optional[Dict[str, str]] = None, config_dir: Optional[str] = None) -> str:
+    """Apply case-insensitive word-boundary pronunciation replacements."""
+    if not text:
+        return text
+    lex = lexicon if lexicon is not None else load_lexicon(config_dir=config_dir)
+    if not lex:
+        return text
+    # Sort longest terms first so specific terms match before substrings
+    for term in sorted(lex.keys(), key=len, reverse=True):
+        spoken = lex[term]
+        pattern = re.compile(r'(?<!\w)' + re.escape(term) + r'(?!\w)', re.IGNORECASE)
+        text = pattern.sub(spoken, text)
+    return text
+
+
+# ── Strict Schema Validation & Atomic Settings Store ──────────────────────────
+
+VALID_PROVIDERS = {'google', 'mymemory', 'libretranslate', 'deepl', 'openai'}
+VALID_LANGS = {'auto', 'en', 'ar', 'de', 'es', 'fr', 'it', 'pt', 'ru', 'zh', 'ja', 'ko', 'tr', 'nl', 'pl'}
+
+
+def _parse_rate_int(val: Any, default: int = 0) -> int:
+    if val is None:
+        return default
+    m = re.search(r'[+-]?\d+', str(val))
+    num = int(m.group(0)) if m else default
+    return max(-50, min(100, num))
+
+
+def _format_rate_str(val: Any) -> str:
+    num = _parse_rate_int(val, 0)
+    return f'+{num}%' if num >= 0 else f'{num}%'
+
+
+def _parse_float_clamped(val: Any, low: float, high: float, default: float) -> float:
+    try:
+        v = float(str(val).strip().rstrip('x'))
+    except (ValueError, TypeError):
+        v = default
+    return round(max(low, min(high, v)), 2)
+
+
+def _parse_int_clamped(val: Any, low: int, high: int, default: int) -> int:
+    try:
+        v = int(float(str(val).strip()))
+    except (ValueError, TypeError):
+        v = default
+    return max(low, min(high, v))
+
+
+def _norm_yes_no(val: Any, default: bool = False) -> str:
+    return 'yes' if to_bool(str(val) if val is not None else '', default) else 'no'
+
+
+def _sanitize_str(val: Any, max_len: int = 256, default: str = '') -> str:
+    if val is None:
+        return default
+    s = CTRL_CHARS_RE.sub('', str(val)).strip()
+    return s[:max_len] if s else default
+
+
+class TTSSettingsStore:
+    """Schema-validated, atomic settings manager for ~/.config/tts_settings."""
+
+    DEFAULTS: Dict[str, Any] = {
+        'voice_en': 'en-US-ChristopherNeural',
+        'voice_ar': 'ar-SA-HamedNeural',
+        'voice_de': 'de-DE-ConradNeural',
+        'custom_voice': '',
+        'rate_en': '+0%',
+        'rate_ar': '+0%',
+        'rate_de': '+0%',
+        'global_speed': '1.0',
+        'show_hud': 'yes',
+        'replay_at_end': 'yes',
+        'filter_markdown': 'yes',
+        'filter_urls': 'yes',
+        'skip_code': 'no',
+        'replace_symbols': 'yes',
+        'use_lexicon': 'yes',
+        'pause_punctuation': 'no',
+        'pause_delay': '150',
+        'translate_enabled': 'no',
+        'translate_to': 'en',
+        'translate_from': 'auto',
+        'translate_provider': 'google',
+        'translate_api_key': '',
+        'piper_model_en': '',
+        'piper_model_de': '',
+        'piper_model_ar': '',
+    }
+
+    def __init__(self, config_dir: Optional[str] = None):
+        self.config_dir = config_dir or CONFIG_DIR
+        self.json_path = os.path.join(self.config_dir, 'settings.json')
+
+    @classmethod
+    def validate(cls, raw: Dict[str, Any]) -> Dict[str, str]:
+        """Validate and normalize a raw settings dictionary against strict schema rules."""
+        src = dict(cls.DEFAULTS)
+        if isinstance(raw, dict):
+            src.update({k: v for k, v in raw.items() if v is not None})
+
+        provider = _sanitize_str(src.get('translate_provider'), 32, 'google').lower()
+        if provider not in VALID_PROVIDERS:
+            provider = 'google'
+
+        trans_to = _sanitize_str(src.get('translate_to'), 10, 'en').lower()
+        if trans_to not in VALID_LANGS or trans_to == 'auto':
+            trans_to = 'en'
+
+        trans_from = _sanitize_str(src.get('translate_from'), 10, 'auto').lower()
+        if trans_from not in VALID_LANGS:
+            trans_from = 'auto'
+
+        validated: Dict[str, str] = {
+            'voice_en': _sanitize_str(src.get('voice_en'), 80, cls.DEFAULTS['voice_en']),
+            'voice_ar': _sanitize_str(src.get('voice_ar'), 80, cls.DEFAULTS['voice_ar']),
+            'voice_de': _sanitize_str(src.get('voice_de'), 80, cls.DEFAULTS['voice_de']),
+            'custom_voice': _sanitize_str(src.get('custom_voice'), 80, ''),
+            'rate_en': _format_rate_str(src.get('rate_en')),
+            'rate_ar': _format_rate_str(src.get('rate_ar')),
+            'rate_de': _format_rate_str(src.get('rate_de')),
+            'global_speed': str(_parse_float_clamped(src.get('global_speed'), 0.5, 3.0, 1.0)),
+            'show_hud': _norm_yes_no(src.get('show_hud'), True),
+            'replay_at_end': _norm_yes_no(src.get('replay_at_end'), True),
+            'filter_markdown': _norm_yes_no(src.get('filter_markdown'), True),
+            'filter_urls': _norm_yes_no(src.get('filter_urls'), True),
+            'skip_code': _norm_yes_no(src.get('skip_code'), False),
+            'replace_symbols': _norm_yes_no(src.get('replace_symbols'), True),
+            'use_lexicon': _norm_yes_no(src.get('use_lexicon'), True),
+            'pause_punctuation': _norm_yes_no(src.get('pause_punctuation'), False),
+            'pause_delay': str(_parse_int_clamped(src.get('pause_delay'), 0, 2000, 150)),
+            'translate_enabled': _norm_yes_no(src.get('translate_enabled'), False),
+            'translate_to': trans_to,
+            'translate_from': trans_from,
+            'translate_provider': provider,
+            'translate_api_key': _sanitize_str(src.get('translate_api_key'), 256, ''),
+            'piper_model_en': _sanitize_str(src.get('piper_model_en'), 512, ''),
+            'piper_model_de': _sanitize_str(src.get('piper_model_de'), 512, ''),
+            'piper_model_ar': _sanitize_str(src.get('piper_model_ar'), 512, ''),
+        }
+        return validated
+
+    def load(self) -> Dict[str, str]:
+        """Load settings from settings.json and overlay any flat config files."""
+        os.makedirs(self.config_dir, mode=0o700, exist_ok=True)
+        merged: Dict[str, Any] = dict(self.DEFAULTS)
+        if os.path.exists(self.json_path):
+            try:
+                with open(self.json_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    merged.update(data)
+            except Exception:
+                pass
+
+        for key in self.DEFAULTS:
+            flat_path = os.path.join(self.config_dir, key)
+            if os.path.exists(flat_path):
+                try:
+                    with open(flat_path, 'r', encoding='utf-8') as f:
+                        merged[key] = f.read().strip()
+                except OSError:
+                    pass
+
+        return self.validate(merged)
+
+    def save(self, updates: Dict[str, Any]) -> Dict[str, str]:
+        """Validate and atomically write both settings.json and flat key files."""
+        current = self.load()
+        current.update(updates or {})
+        validated = self.validate(current)
+        atomic_write_json(self.json_path, validated, mode=0o600)
+        for key, val in validated.items():
+            flat_path = os.path.join(self.config_dir, key)
+            atomic_write_text(flat_path, str(val), mode=0o600)
+        return validated
 
 # ── Regexes ───────────────────────────────────────────────────────────────────
 
@@ -69,9 +439,11 @@ def clean_and_filter_text(
     filter_urls: bool = True,
     filter_code: bool = False,
     replace_symbols: bool = True,
+    use_lexicon: bool = True,
+    lexicon: Optional[Dict[str, str]] = None,
     max_chars: int = 20000,
 ) -> str:
-    """Clean control characters, markdown formatting, URLs, and technical symbols."""
+    """Clean control characters, markdown formatting, URLs, technical symbols, and lexicon aliases."""
     if not text:
         return ''
 
@@ -126,6 +498,9 @@ def clean_and_filter_text(
         text = text.replace('→', ' to ').replace('->', ' to ')
         text = text.replace('←', ' from ').replace('<-', ' from ')
 
+    if use_lexicon:
+        text = apply_lexicon(text, lexicon=lexicon)
+
     # Normalize bullets and list items into clean sentence breaks so bullet lists split naturally
     text = re.sub(r'[•◦▪▸►●○]', '. ', text)
     text = re.sub(r'(?m)^\s*[-*+]\s+', '', text)
@@ -148,6 +523,9 @@ def clean_and_filter_text(
         text = text[:max_chars]
 
     return text
+
+
+clean_text_for_tts = clean_and_filter_text
 
 
 def _has_umlaut(text: str) -> bool:
@@ -478,8 +856,10 @@ def process_and_write_segments(
     filter_urls: bool = True,
     filter_code: bool = False,
     replace_symbols: bool = True,
+    use_lexicon: bool = True,
 ) -> int:
-    os.makedirs(workdir, exist_ok=True)
+    os.makedirs(workdir, mode=0o700, exist_ok=True)
+    ensure_runtime_symlinks()
 
     cleaned_text = clean_and_filter_text(
         raw_text,
@@ -487,6 +867,7 @@ def process_and_write_segments(
         filter_urls=filter_urls,
         filter_code=filter_code,
         replace_symbols=replace_symbols,
+        use_lexicon=use_lexicon,
     )
 
     if speakable_count(cleaned_text) < 2:
@@ -543,7 +924,9 @@ def process_and_write_segments(
 
 def main():
     parser = argparse.ArgumentParser(description='Process and segment text for TTS.')
-    parser.add_argument('--workdir', required=True, help='Work directory for segment files')
+    parser.add_argument('--workdir', default='', help='Work directory for segment files')
+    parser.add_argument('--print-runtime-dir', action='store_true', help='Print per-user runtime dir and exit')
+    parser.add_argument('--sync-settings', action='store_true', help='Validate and sync ~/.config/tts_settings')
     parser.add_argument('--source-lang', default='auto', help='Source language code or auto')
     parser.add_argument('--pause-punctuation', default='no', help='yes/no')
     parser.add_argument('--first-chunk-max', type=int, default=220)
@@ -552,12 +935,24 @@ def main():
     parser.add_argument('--filter-urls', default='yes')
     parser.add_argument('--filter-code', default='no')
     parser.add_argument('--replace-symbols', default='yes')
+    parser.add_argument('--use-lexicon', default='yes')
     args = parser.parse_args()
 
+    if args.print_runtime_dir:
+        ensure_runtime_symlinks()
+        print(get_runtime_dir())
+        return
+
+    if args.sync_settings:
+        store = TTSSettingsStore()
+        store.save({})
+        return
+
+    workdir = args.workdir or get_work_dir()
     raw_text = sys.stdin.read()
     count = process_and_write_segments(
         raw_text=raw_text,
-        workdir=args.workdir,
+        workdir=workdir,
         source_lang=args.source_lang,
         pause_punctuation=to_bool(args.pause_punctuation, False),
         first_chunk_max=args.first_chunk_max,
@@ -566,6 +961,7 @@ def main():
         filter_urls=to_bool(args.filter_urls, True),
         filter_code=to_bool(args.filter_code, False),
         replace_symbols=to_bool(args.replace_symbols, True),
+        use_lexicon=to_bool(args.use_lexicon, True),
     )
     print(count)
 

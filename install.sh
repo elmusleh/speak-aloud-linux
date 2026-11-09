@@ -34,7 +34,7 @@ else
 fi
 
 # Install packages with validation
-PACKAGES=(pipx xsel yad socat wl-clipboard python3-pil python3-pip python3-pyqt6 python3-pyqt6.qtsvg file)
+PACKAGES=(pipx xsel yad socat wl-clipboard tesseract-ocr python3-pil python3-pip python3-pyqt6 python3-pyqt6.qtsvg file)
 [ -n "$MPV_INSTALL" ] && PACKAGES+=("$MPV_INSTALL")
 echo "Installing packages: ${PACKAGES[*]}"
 
@@ -102,7 +102,7 @@ echo -e "${GREEN}✓ Config files ready at ~/.config/tts_settings/${RESET}"
 echo ""
 
 # ── Step 4: Make scripts executable ──────────
-echo -e "${BOLD}[4/6] Setting permissions...${RESET}"
+echo -e "${BOLD}[4/7] Setting permissions...${RESET}"
 chmod +x "$SCRIPT_DIR/speak.sh"
 chmod +x "$SCRIPT_DIR/speak-pause.sh"
 chmod +x "$SCRIPT_DIR/speak-stop.sh"
@@ -111,13 +111,16 @@ chmod +x "$SCRIPT_DIR/tts-settings.py"
 chmod +x "$SCRIPT_DIR/tts-daemon.py"
 chmod +x "$SCRIPT_DIR/tts_hud.py"
 chmod +x "$SCRIPT_DIR/tts_text_processor.py"
+chmod +x "$SCRIPT_DIR/tts_synth_worker.py"
+chmod +x "$SCRIPT_DIR/tts_ocr.py"
 chmod +x "$SCRIPT_DIR/get-selected-text.py"
 chmod +x "$SCRIPT_DIR/setup-tts-shortcuts.sh"
-echo -e "${GREEN}✓ Scripts are executable${RESET}"
+python3 "$SCRIPT_DIR/tts_text_processor.py" --sync-settings 2>/dev/null || true
+echo -e "${GREEN}✓ Scripts are executable and settings schema initialized${RESET}"
 echo ""
 
-# ── Step 5: Desktop entry ────────────────────
-echo -e "${BOLD}[5/6] Adding to app menu...${RESET}"
+# ── Step 5: Desktop entry & Systemd User Service ────────────────────
+echo -e "${BOLD}[5/7] Adding to app menu and systemd user service...${RESET}"
 DESKTOP_FILE="$HOME/.local/share/applications/speak-aloud.desktop"
 mkdir -p "$HOME/.local/share/applications"
 cat > "$DESKTOP_FILE" <<EOF
@@ -131,7 +134,32 @@ Terminal=false
 Categories=AudioVideo;Audio;Utility;
 Keywords=tts;speech;text-to-speech;audio;read aloud;
 EOF
-echo -e "${GREEN}✓ App menu entry created${RESET}"
+
+SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
+mkdir -p "$SYSTEMD_USER_DIR"
+cat > "$SYSTEMD_USER_DIR/speak-aloud-daemon.service" <<EOF
+[Unit]
+Description=Speak a Loud Universal — Tray, Floating HUD & Async TTS Synthesis Daemon
+After=graphical-session.target pipewire.service pulseaudio.service
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+WorkingDirectory=$SCRIPT_DIR
+ExecStart=/usr/bin/python3 $SCRIPT_DIR/tts-daemon.py
+Restart=on-failure
+RestartSec=2
+Environment="PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+[Install]
+WantedBy=graphical-session.target default.target
+EOF
+
+if command -v systemctl &>/dev/null; then
+    systemctl --user daemon-reload 2>/dev/null || true
+    systemctl --user enable speak-aloud-daemon.service 2>/dev/null || true
+fi
+echo -e "${GREEN}✓ App menu entry and speak-aloud-daemon.service configured${RESET}"
 echo ""
 
 

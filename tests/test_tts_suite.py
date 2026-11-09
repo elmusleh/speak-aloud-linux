@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 """
 Automated unit & integration test suite for Speak a Loud Universal.
+Covers core text processing, trilingual segmentation, fast first-chunk splitting,
+timeline math, queue CLI, per-user 0700 runtime directory, schema-validated atomic
+settings store, pronunciation lexicon, async synthesis worker & Piper model discovery,
+OCR image extraction, live transcript drawer & HUD hotkeys, and systemd service unit.
 """
 
 import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -13,6 +18,8 @@ SCRIPT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
+import tts_ocr
+import tts_synth_worker as sw
 import tts_text_processor as tp
 from tts_hud import MPVTimelineController, format_time
 
@@ -53,7 +60,6 @@ def test_trilingual_segmentation_and_technical_jargon():
     )
     segs = tp.segment_by_language(sample, source_lang='auto')
     langs = [lang for lang, _ in segs]
-    # English technical jargon must stay 'en', followed by 'ar', followed by 'de'
     assert langs == ['en', 'ar', 'de']
     assert '2026' in segs[1][1]
 
@@ -73,7 +79,6 @@ def test_fast_first_chunk_and_manifest():
         with open(os.path.join(d, 'manifest.json'), 'r', encoding='utf-8') as f:
             manifest = json.load(f)
         assert manifest['total_chunks'] == count
-        # First chunk must be capped <= 220 chars for sub-second startup
         assert manifest['chunks'][0]['chars'] <= 220
         for c in manifest['chunks'][1:]:
             assert c['chars'] <= 480
@@ -105,6 +110,7 @@ def test_queue_cli_mode():
     with tempfile.TemporaryDirectory() as tmp:
         env = os.environ.copy()
         env['TMPDIR'] = tmp
+        env['XDG_RUNTIME_DIR'] = tmp
         r = subprocess.run(
             ['bash', os.path.join(SCRIPT_DIR, 'speak.sh'), '--queue', '--text', 'First queued passage for testing.'],
             env=env,
@@ -115,6 +121,129 @@ def test_queue_cli_mode():
         assert r.returncode == 0
         qfile = os.path.join(tmp, 'speak-aloud-queue.json')
         assert os.path.exists(qfile)
-        data = json.load(open(qfile, 'r', encoding='utf-8'))
+        with open(qfile, 'r', encoding='utf-8') as f:
+            data = json.load(f)
         assert len(data['items']) == 1
         assert 'First queued passage' in data['items'][0]['text']
+
+
+def test_per_user_runtime_dir_and_permissions():
+    rdir = tp.get_runtime_dir()
+    assert os.path.isdir(rdir)
+    assert f'speak-aloud-{os.getuid()}' in rdir
+    mode = stat.S_IMODE(os.stat(rdir).st_mode)
+    assert mode == 0o700
+
+
+def test_schema_validation_and_atomic_settings_store():
+    with tempfile.TemporaryDirectory() as cdir:
+        store = tp.TTSSettingsStore(config_dir=cdir)
+        saved = store.save({
+            'rate_en': '+999%',
+            'rate_ar': '-99%',
+            'global_speed': '9.5',
+            'pause_punctuation': 'TRUE',
+            'skip_code': 'FALSE',
+            'pause_delay': '5000',
+            'translate_provider': 'invalid_provider',
+        })
+        assert saved['rate_en'] == '+100%'
+        assert saved['rate_ar'] == '-50%'
+        assert saved['global_speed'] == '3.0'
+        assert saved['pause_punctuation'] == 'yes'
+        assert saved['skip_code'] == 'no'
+        assert saved['pause_delay'] == '2000'
+        assert saved['translate_provider'] == 'google'
+
+        # Verify atomic JSON and flat file creation with 0600 permissions
+        json_path = os.path.join(cdir, 'settings.json')
+        assert os.path.isfile(json_path)
+        assert stat.S_IMODE(os.stat(json_path).st_mode) == 0o600
+        loaded = store.load()
+        assert loaded['rate_en'] == '+100%'
+        assert loaded['pause_punctuation'] == 'yes'
+
+
+def test_pronunciation_lexicon_replacement():
+    with tempfile.TemporaryDirectory() as cdir:
+        lex = tp.save_lexicon({'kubectl': 'kube control', 'PyQt6': 'Pie Cute 6', 'nginx': 'engine X'}, config_dir=cdir)
+        cleaned = tp.clean_and_filter_text(
+            'Run kubectl and nginx with PyQt6 GUI.',
+            use_lexicon=True,
+            lexicon=lex,
+        )
+        assert 'kube control' in cleaned
+        assert 'engine X' in cleaned
+        assert 'Pie Cute 6' in cleaned
+
+
+def test_async_synth_worker_and_piper_discovery():
+    assert sw._ensure_edge_tts_importable() is True
+    with tempfile.TemporaryDirectory() as mdir:
+        fake_onnx = os.path.join(mdir, 'en_US-lessac-medium.onnx')
+        with open(fake_onnx, 'wb') as f:
+            f.write(b'ONNX_MODEL_HEADER')
+        resolved = sw.resolve_piper_model(lang='en', configured_model=fake_onnx)
+        assert resolved == fake_onnx
+
+
+def test_ocr_image_extraction():
+    from PIL import Image, ImageDraw, ImageFont
+
+    with tempfile.TemporaryDirectory() as tmp:
+        img_path = os.path.join(tmp, 'ocr_sample.png')
+        img = Image.new('RGB', (640, 140), color=(255, 255, 255))
+        draw = ImageDraw.Draw(img)
+        try:
+            font = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', 34)
+        except Exception:
+            font = ImageFont.load_default()
+        draw.text((28, 45), 'Speak Aloud OCR 2026', fill=(0, 0, 0), font=font)
+        img.save(img_path, 'PNG')
+
+        extracted = tts_ocr.extract_text_from_image(img_path, langs='eng')
+        assert 'Speak' in extracted
+        assert '2026' in extracted
+
+
+def test_hud_transcript_and_hotkeys():
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QKeyEvent
+    from PyQt6.QtWidgets import QApplication
+    from tts_hud import FloatingPlayerWindow, QueueManagerWindow
+
+    _app = QApplication.instance() or QApplication([])
+    ctrl = MPVTimelineController()
+    ctrl.chunks_meta = [
+        {'id': 0, 'lang': 'en', 'text': 'First sentence in transcript.'},
+        {'id': 1, 'lang': 'de', 'text': 'Zweiter Satz im Transkript.'},
+    ]
+    ctrl.chunk_durations = [4.0, 6.0]
+    ctrl.total_duration = 10.0
+
+    qwin = QueueManagerWindow()
+    hud = FloatingPlayerWindow(ctrl, qwin)
+
+    # Toggle transcript via hotkey 'T'
+    assert hud.transcript_box.isHidden() is True
+    ev_t = QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_T, Qt.KeyboardModifier.NoModifier)
+    hud.keyPressEvent(ev_t)
+    assert hud.transcript_box.isHidden() is False
+    assert len(hud._transcript_rows) == 2
+
+    # Step speed up via ']'
+    initial_spd = ctrl.speed
+    ev_up = QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_BracketRight, Qt.KeyboardModifier.NoModifier)
+    hud.keyPressEvent(ev_up)
+    assert ctrl.speed >= initial_spd
+
+
+def test_systemd_unit_file_valid():
+    unit_path = os.path.join(SCRIPT_DIR, 'speak-aloud-daemon.service')
+    assert os.path.isfile(unit_path)
+    with open(unit_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+    assert '[Unit]' in content
+    assert '[Service]' in content
+    assert 'Restart=on-failure' in content
+    assert 'tts-daemon.py' in content

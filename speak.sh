@@ -23,17 +23,37 @@ notify-send() {
     esac
 }
 
-# Use system temp directory for portability
+# Use per-user 0700 runtime directory ($XDG_RUNTIME_DIR/speak-aloud-$UID) with /tmp symlinks
 TEMP_DIR="${TMPDIR:-/tmp}"
-WORK_DIR="$TEMP_DIR/speak-aloud-work"
-TTS_STATUS_FILE="$TEMP_DIR/tts-status"          # polled by tts-daemon.py
-QUEUE_FILE="$TEMP_DIR/speak-aloud-queue.json"   # shared playback queue
-LOCK_FILE="$TEMP_DIR/speak-aloud.lock"
-MPV_SOCKET="$TEMP_DIR/speak-aloud-mpv.sock"
-INTERRUPT_FLAG="$TEMP_DIR/speak-aloud.interrupt"
+USER_UID="$(id -u)"
+if [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -d "${XDG_RUNTIME_DIR}" ] && [ -w "${XDG_RUNTIME_DIR}" ]; then
+    RUNTIME_DIR="${XDG_RUNTIME_DIR}/speak-aloud-${USER_UID}"
+else
+    RUNTIME_DIR="${TEMP_DIR}/speak-aloud-${USER_UID}"
+fi
+mkdir -p "$RUNTIME_DIR" "$RUNTIME_DIR/work" 2>/dev/null || true
+chmod 700 "$RUNTIME_DIR" "$RUNTIME_DIR/work" 2>/dev/null || true
+
+WORK_DIR="$RUNTIME_DIR/work"
+TTS_STATUS_FILE="$RUNTIME_DIR/status"           # polled by tts-daemon.py
+QUEUE_FILE="$RUNTIME_DIR/queue.json"            # shared playback queue
+LOCK_FILE="$RUNTIME_DIR/lock"
+MPV_SOCKET="$RUNTIME_DIR/mpv.sock"
+SYNTH_SOCKET="$RUNTIME_DIR/synth.sock"
+INTERRUPT_FLAG="$RUNTIME_DIR/interrupt"
+
+# Maintain backward-compatible user-owned symlinks in /tmp
+ln -sfn "$WORK_DIR" "$TEMP_DIR/speak-aloud-work" 2>/dev/null || true
+ln -sfn "$TTS_STATUS_FILE" "$TEMP_DIR/tts-status" 2>/dev/null || true
+ln -sfn "$TTS_STATUS_FILE" "$TEMP_DIR/speak-aloud-status" 2>/dev/null || true
+ln -sfn "$QUEUE_FILE" "$TEMP_DIR/speak-aloud-queue.json" 2>/dev/null || true
+ln -sfn "$MPV_SOCKET" "$TEMP_DIR/speak-aloud-mpv.sock" 2>/dev/null || true
+ln -sfn "$SYNTH_SOCKET" "$TEMP_DIR/speak-aloud-synth.sock" 2>/dev/null || true
 
 # ── Parse optional CLI args (single clean pass) ───────────────────────────────
 OVERRIDE_TEXT=""
+OCR_MODE="no"
+OCR_IMAGE=""
 OVERRIDE_EN_VOICE=""
 OVERRIDE_AR_VOICE=""
 OVERRIDE_DE_VOICE=""
@@ -57,7 +77,9 @@ Usage: speak.sh [OPTIONS]
 
 Options:
   --text TEXT                Speak explicit text
-  --queue                    Add selected (or --text) content to the playback queue
+  --ocr                      Select a screen region via rubber-band & read via OCR
+  --ocr-image FILE           Extract text from an image file via OCR & speak it
+  --queue                    Add selected (or --text / --ocr) content to the playback queue
   --generate-only            Generate segment audio files without playing
   --en-voice VOICE           Override English voice
   --ar-voice VOICE           Override Arabic voice
@@ -78,14 +100,16 @@ Options:
 
 Audio file locations:
   Cache folder (30-day persistent): ~/.cache/speak-aloud/
-  Temp work folder (segments):      /tmp/speak-aloud-work/
+  Runtime folder (0700 isolated):   $XDG_RUNTIME_DIR/speak-aloud-$UID/
 EOF
 }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --text)               OVERRIDE_TEXT="$2";              shift 2 ;;
-        --queue)              TTS_MODE="queue";                shift 1 ;;
+        --ocr)                OCR_MODE="yes";                  shift 1 ;;
+        --ocr-image)          OCR_MODE="yes"; OCR_IMAGE="$2";  shift 2 ;;
+        --queue|-q)           TTS_MODE="queue";                shift 1 ;;
         --generate-only)      TTS_MODE="generate";             shift 1 ;;
         --en-voice)           OVERRIDE_EN_VOICE="$2";          shift 2 ;;
         --ar-voice)           OVERRIDE_AR_VOICE="$2";          shift 2 ;;
@@ -106,6 +130,17 @@ while [[ $# -gt 0 ]]; do
         *)                    shift ;;
     esac
 done
+
+if [ "$OCR_MODE" = "yes" ] && [ -z "$OVERRIDE_TEXT" ]; then
+    if [ -n "$OCR_IMAGE" ]; then
+        OVERRIDE_TEXT=$(python3 "$SCRIPT_DIR/tts_ocr.py" --image "$OCR_IMAGE" 2>/dev/null || echo "")
+    else
+        OVERRIDE_TEXT=$(python3 "$SCRIPT_DIR/tts_ocr.py" 2>/dev/null || echo "")
+    fi
+    if [ -z "$OVERRIDE_TEXT" ]; then
+        exit 0
+    fi
+fi
 
 DEBUG_LOG="$TEMP_DIR/speak-debug.log"
 debug() { printf '[%s] %s\n' "$(date '+%H:%M:%S.%3N')" "$*" >> "$DEBUG_LOG"; }
@@ -288,31 +323,40 @@ normalize_bool() {
 }
 
 # ── Read config with CLI overrides taking priority ────────────────────────────
-EN_VOICE="${OVERRIDE_EN_VOICE:-$(cat "$CONFIG_DIR/voice"        2>/dev/null || echo "en-US-ChristopherNeural")}"
-AR_VOICE="${OVERRIDE_AR_VOICE:-$(cat "$CONFIG_DIR/arabic_voice" 2>/dev/null || echo "ar-SA-HamedNeural")}"
-DE_VOICE="${OVERRIDE_DE_VOICE:-$(cat "$CONFIG_DIR/german_voice" 2>/dev/null || echo "de-DE-ConradNeural")}"
-EN_RATE="${OVERRIDE_EN_RATE:-$(cat   "$CONFIG_DIR/rate"         2>/dev/null || echo "+50%")}"
-AR_RATE="${OVERRIDE_AR_RATE:-$(cat   "$CONFIG_DIR/arabic_rate"  2>/dev/null || echo "+30%")}"
-DE_RATE="${OVERRIDE_DE_RATE:-$(cat   "$CONFIG_DIR/german_rate"  2>/dev/null || echo "+30%")}"
+EN_VOICE="${OVERRIDE_EN_VOICE:-$(cat "$CONFIG_DIR/voice_en" "$CONFIG_DIR/voice" 2>/dev/null | head -n1)}"
+EN_VOICE="${EN_VOICE:-en-US-ChristopherNeural}"
+AR_VOICE="${OVERRIDE_AR_VOICE:-$(cat "$CONFIG_DIR/voice_ar" "$CONFIG_DIR/arabic_voice" 2>/dev/null | head -n1)}"
+AR_VOICE="${AR_VOICE:-ar-SA-HamedNeural}"
+DE_VOICE="${OVERRIDE_DE_VOICE:-$(cat "$CONFIG_DIR/voice_de" "$CONFIG_DIR/german_voice" 2>/dev/null | head -n1)}"
+DE_VOICE="${DE_VOICE:-de-DE-ConradNeural}"
 
-SOURCE_LANG="${OVERRIDE_SOURCE_LANG:-$(cat "$CONFIG_DIR/source_language" 2>/dev/null || echo "auto")}"
+EN_RATE="${OVERRIDE_EN_RATE:-$(cat "$CONFIG_DIR/rate_en" "$CONFIG_DIR/rate" 2>/dev/null | head -n1)}"
+EN_RATE="${EN_RATE:-+50%}"
+AR_RATE="${OVERRIDE_AR_RATE:-$(cat "$CONFIG_DIR/rate_ar" "$CONFIG_DIR/arabic_rate" 2>/dev/null | head -n1)}"
+AR_RATE="${AR_RATE:-+30%}"
+DE_RATE="${OVERRIDE_DE_RATE:-$(cat "$CONFIG_DIR/rate_de" "$CONFIG_DIR/german_rate" 2>/dev/null | head -n1)}"
+DE_RATE="${DE_RATE:-+30%}"
+
+SOURCE_LANG="${OVERRIDE_SOURCE_LANG:-$(cat "$CONFIG_DIR/translate_from" "$CONFIG_DIR/source_language" 2>/dev/null | head -n1)}"
+SOURCE_LANG="${SOURCE_LANG:-auto}"
 RAW_TRANSLATE_ENABLED="${OVERRIDE_TRANSLATE_ENABLED:-$(cat "$CONFIG_DIR/translate_enabled" 2>/dev/null || echo "no")}"
 TRANSLATE_ENABLED=$(normalize_bool "$RAW_TRANSLATE_ENABLED" "no")
 TRANSLATE_PROVIDER="${OVERRIDE_TRANSLATE_PROVIDER:-$(cat "$CONFIG_DIR/translate_provider" 2>/dev/null || echo "deepl")}"
-TRANSLATE_TARGET="${OVERRIDE_TRANSLATE_TARGET:-$(cat "$CONFIG_DIR/translate_target" 2>/dev/null || echo "")}"
+TRANSLATE_TARGET="${OVERRIDE_TRANSLATE_TARGET:-$(cat "$CONFIG_DIR/translate_to" "$CONFIG_DIR/translate_target" 2>/dev/null | head -n1)}"
 TRANSLATE_KEY="${OVERRIDE_TRANSLATE_KEY:-$(cat "$CONFIG_DIR/translate_api_key" 2>/dev/null || echo "")}"
 
 RAW_PAUSE_PUNCT="${OVERRIDE_PAUSE_PUNCTUATION:-$(cat "$CONFIG_DIR/pause_punctuation" 2>/dev/null || echo "no")}"
 PAUSE_PUNCTUATION=$(normalize_bool "$RAW_PAUSE_PUNCT" "no")
-PAUSE_DELAY_MS="${OVERRIDE_PAUSE_DELAY_MS:-$(cat "$CONFIG_DIR/pause_delay_ms" 2>/dev/null || echo "100")}"
+PAUSE_DELAY_MS="${OVERRIDE_PAUSE_DELAY_MS:-$(cat "$CONFIG_DIR/pause_delay" "$CONFIG_DIR/pause_delay_ms" 2>/dev/null | head -n1)}"
 if ! [[ "$PAUSE_DELAY_MS" =~ ^[0-9]+$ ]] || [ "$PAUSE_DELAY_MS" -lt 0 ] || [ "$PAUSE_DELAY_MS" -gt 2000 ]; then
     PAUSE_DELAY_MS=100
 fi
 
 FILTER_MARKDOWN=$(normalize_bool "$(cat "$CONFIG_DIR/filter_markdown" 2>/dev/null || echo "yes")" "yes")
 FILTER_URLS=$(normalize_bool "$(cat "$CONFIG_DIR/filter_urls" 2>/dev/null || echo "yes")" "yes")
-FILTER_CODE=$(normalize_bool "$(cat "$CONFIG_DIR/filter_code" 2>/dev/null || echo "no")" "no")
+FILTER_CODE=$(normalize_bool "$(cat "$CONFIG_DIR/skip_code" "$CONFIG_DIR/filter_code" 2>/dev/null | head -n1 || echo "no")" "no")
 REPLACE_SYMBOLS=$(normalize_bool "$(cat "$CONFIG_DIR/replace_symbols" 2>/dev/null || echo "yes")" "yes")
+USE_LEXICON=$(normalize_bool "$(cat "$CONFIG_DIR/use_lexicon" 2>/dev/null || echo "yes")" "yes")
 
 # ── Optional: translate text before TTS ───────────────────────────────────────
 if [ "$TRANSLATE_ENABLED" = "yes" ] && [ -n "$TRANSLATE_TARGET" ] && [ -n "$TRANSLATE_KEY" ]; then
@@ -335,6 +379,7 @@ fi
 # ── Clean work dir and run unified Python text processor & segmenter ──────────
 rm -rf "$WORK_DIR"
 mkdir -p "$WORK_DIR"
+chmod 700 "$WORK_DIR" 2>/dev/null || true
 
 SEG_COUNT=$(printf '%s' "$TEXT" | python3 "$SCRIPT_DIR/tts_text_processor.py" \
     --workdir "$WORK_DIR" \
@@ -343,7 +388,8 @@ SEG_COUNT=$(printf '%s' "$TEXT" | python3 "$SCRIPT_DIR/tts_text_processor.py" \
     --filter-markdown "$FILTER_MARKDOWN" \
     --filter-urls "$FILTER_URLS" \
     --filter-code "$FILTER_CODE" \
-    --replace-symbols "$REPLACE_SYMBOLS" 2>/dev/null)
+    --replace-symbols "$REPLACE_SYMBOLS" \
+    --use-lexicon "$USE_LEXICON" 2>/dev/null)
 
 if [ -z "$SEG_COUNT" ] || ! [ "$SEG_COUNT" -ge 1 ] 2>/dev/null; then
     if [ -n "$OVERRIDE_TEXT" ]; then
@@ -405,13 +451,32 @@ silence_file_for_delay() {
 }
 
 generate_audio() {
-    local voice="$1" rate="$2" text="$3" audio="$4"
+    local voice="$1" rate="$2" text="$3" audio="$4" lang="${5:-en}"
     local tmp_stderr tmp_audio attempt delay
     local rate_args=()
     [ -n "$rate" ] && [ "$rate" != "+0%" ] && [ "$rate" != "0%" ] && rate_args=(--rate="$rate")
     tmp_stderr=$(create_temp_file)
     tmp_audio=$(create_temp_file ".mp3")
 
+    # 1. Fast path: Persistent Async Python Worker over UNIX socket ($SYNTH_SOCKET)
+    #    (uses in-memory edge_tts.Communicate and falls back to local Piper ONNX if available)
+    if [ -f "$SCRIPT_DIR/tts_synth_worker.py" ]; then
+        if python3 "$SCRIPT_DIR/tts_synth_worker.py" \
+            --text "$text" \
+            --voice "$voice" \
+            --rate "${rate:-+0%}" \
+            --lang "$lang" \
+            --output "$tmp_audio" \
+            --socket "$SYNTH_SOCKET" 2>"$tmp_stderr"; then
+            if [ -s "$tmp_audio" ]; then
+                mv "$tmp_audio" "$audio"
+                rm -f "$tmp_stderr" "$tmp_audio"
+                return 0
+            fi
+        fi
+    fi
+
+    # 2. Secondary path: edge-tts CLI with exponential backoff
     for attempt in 1 2 3 4 5; do
         : > "$tmp_stderr"
         if edge-tts --voice "$voice" "${rate_args[@]}" --text "$text" --write-media "$tmp_audio" 2>"$tmp_stderr"; then
@@ -452,6 +517,22 @@ generate_audio() {
             err_msg="Rate limited by Microsoft TTS service. Try again later."
         else
             err_msg="Failed to generate speech. Check your internet connection."
+        fi
+
+        # 3. Offline fallback: espeak-ng -> WAV/MP3 if both edge-tts and piper failed
+        if command -v espeak-ng &>/dev/null; then
+            local tmp_wav
+            tmp_wav=$(create_temp_file ".wav")
+            if espeak-ng -v "${lang:-en}" -w "$tmp_wav" "$text" 2>/dev/null && [ -s "$tmp_wav" ]; then
+                if command -v ffmpeg &>/dev/null && ffmpeg -y -loglevel error -i "$tmp_wav" -codec:a libmp3lame -b:a 48k "$tmp_audio" 2>/dev/null && [ -s "$tmp_audio" ]; then
+                    mv "$tmp_audio" "$audio"
+                else
+                    mv "$tmp_wav" "$audio"
+                fi
+                rm -f "$tmp_stderr" "$tmp_audio" "$tmp_wav"
+                return 0
+            fi
+            rm -f "$tmp_wav"
         fi
 
         echo "$err_msg" >&2
@@ -499,7 +580,7 @@ for i in $(seq 0 $((SEG_COUNT - 1))); do
             echo "completed" > "$STATUS_PATH"
             debug "Segment $PAD: cache hit"
         else
-            if ! generate_audio "$VOICE" "$RATE" "$SEG_TEXT" "$AUDIO" 2>"$WORK_DIR/err_${PAD}.txt"; then
+            if ! generate_audio "$VOICE" "$RATE" "$SEG_TEXT" "$AUDIO" "$LANG" 2>"$WORK_DIR/err_${PAD}.txt"; then
                 echo "failed" > "$STATUS_PATH"
                 debug "Segment $PAD: generation FAILED"
                 exit 1
@@ -667,7 +748,7 @@ if [ "$FAILED" -ne 0 ]; then
                 cp "$CACHED" "$AUDIO"
                 echo "completed" > "$STATUS_PATH"
                 FAILED=0
-            elif generate_audio "$VOICE" "$RATE" "$SEG_TEXT" "$AUDIO" 2>"$WORK_DIR/err_${PAD}.txt"; then
+            elif generate_audio "$VOICE" "$RATE" "$SEG_TEXT" "$AUDIO" "$LANG" 2>"$WORK_DIR/err_${PAD}.txt"; then
                 cache_store "$AUDIO" "$CACHED"
                 echo "completed" > "$STATUS_PATH"
                 FAILED=0
