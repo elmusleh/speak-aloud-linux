@@ -885,6 +885,9 @@ class TTSSettingsStore:
         'auto_scroll_window': 'no',
         'anki_deck': 'Default',
         'anki_model': 'Basic',
+        'first_chunk_max': '140',
+        'max_segment_chars': '280',
+        'voice_clarity_eq': 'no',
     }
 
     def __init__(self, config_dir: Optional[str] = None):
@@ -955,6 +958,9 @@ class TTSSettingsStore:
             'auto_scroll_window': _norm_yes_no(src.get('auto_scroll_window'), False),
             'anki_deck': _sanitize_str(src.get('anki_deck'), 128, 'Default'),
             'anki_model': _sanitize_str(src.get('anki_model'), 128, 'Basic'),
+            'first_chunk_max': str(_parse_int_clamped(src.get('first_chunk_max'), 60, 400, 140)),
+            'max_segment_chars': str(_parse_int_clamped(src.get('max_segment_chars'), 100, 800, 280)),
+            'voice_clarity_eq': _norm_yes_no(src.get('voice_clarity_eq'), False),
         }
         return validated
 
@@ -1081,6 +1087,9 @@ def split_text_into_sentences(text: str) -> List[str]:
     if not text:
         return []
     return [s.strip() for s in SENT_SPLIT_RE.split(text) if s.strip()]
+
+
+split_into_sentences = split_text_into_sentences
 
 
 def to_bool(val: str, default: bool = False) -> bool:
@@ -1226,6 +1235,79 @@ def clean_and_filter_text(
 
 
 clean_text_for_tts = clean_and_filter_text
+
+
+def condense_or_summarize_text(raw_text: str, max_sentences: int = 5) -> str:
+    """
+    Summarize long documents or articles before speech synthesis.
+    Attempts local Ollama API (localhost:11434) if running, with a smart
+    extractive sentence-frequency summarizer fallback for 100% offline usage.
+    """
+    if not raw_text or len(raw_text.strip()) < 150:
+        return raw_text
+
+    text = raw_text.strip()
+
+    # Fast path: Try local Ollama if responding
+    try:
+        import urllib.request
+        ollama_url = 'http://127.0.0.1:11434/api/generate'
+        prompt = (
+            "Summarize the following text into 3-5 concise, natural spoken sentences "
+            "suitable for text-to-speech. Return ONLY the spoken summary text without bullet points or preamble:\n\n"
+            + text[:8000]
+        )
+        payload = json.dumps({
+            'model': 'llama3.2',
+            'prompt': prompt,
+            'stream': False,
+        }).encode('utf-8')
+        req = urllib.request.Request(ollama_url, data=payload, headers={'Content-Type': 'application/json'})
+        with urllib.request.urlopen(req, timeout=3.5) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+            summary = data.get('response', '').strip()
+            if summary and len(summary) > 40:
+                return summary
+    except Exception:
+        pass
+
+    # High-accuracy offline extractive summarizer fallback (Word frequency scoring)
+    try:
+        from collections import Counter
+        sentences = split_text_into_sentences(text)
+        if len(sentences) <= max_sentences:
+            return text
+
+        words = re.findall(r'\b[a-zA-Z\u00C0-\u024F\u0600-\u06FF]{3,}\b', text.lower())
+        stop_words = {
+            'the', 'and', 'for', 'that', 'this', 'with', 'from', 'have', 'were', 'which',
+            'they', 'their', 'about', 'there', 'been', 'would', 'could', 'should', 'der',
+            'die', 'das', 'und', 'mit', 'von', 'eine', 'einer', 'einem', 'einen', 'oder',
+            'aber', 'wurde', 'haben', 'werden', 'sind', 'auch', 'dass', 'nicht', 'nach',
+        }
+        filtered = [w for w in words if w not in stop_words]
+        if not filtered:
+            return ' '.join(sentences[:max_sentences])
+
+        freq = Counter(filtered)
+        max_freq = max(freq.values())
+        norm_freq = {k: v / max_freq for k, v in freq.items()}
+
+        scores = []
+        for idx, s in enumerate(sentences):
+            s_words = re.findall(r'\b[a-zA-Z\u00C0-\u024F\u0600-\u06FF]{3,}\b', s.lower())
+            if not s_words:
+                continue
+            raw_score = sum(norm_freq.get(w, 0.0) for w in s_words) / len(s_words)
+            pos_bonus = 1.3 if idx == 0 else (1.15 if idx < 3 else 1.0)
+            scores.append((raw_score * pos_bonus, idx, s))
+
+        scores.sort(key=lambda x: x[0], reverse=True)
+        top = scores[:max_sentences]
+        top.sort(key=lambda x: x[1])
+        return ' '.join(s for _, _, s in top)
+    except Exception:
+        return text
 
 
 def _has_umlaut(text: str) -> bool:
@@ -1553,8 +1635,8 @@ def process_and_write_segments(
     workdir: str,
     source_lang: str = 'auto',
     pause_punctuation: bool = False,
-    first_chunk_max: int = 220,
-    max_segment_chars: int = 480,
+    first_chunk_max: int = 140,
+    max_segment_chars: int = 280,
     filter_markdown: bool = True,
     filter_urls: bool = True,
     filter_code: bool = False,
@@ -1643,14 +1725,15 @@ def main():
     parser.add_argument('--sync-settings', action='store_true', help='Validate and sync ~/.config/tts_settings')
     parser.add_argument('--source-lang', default='auto', help='Source language code or auto')
     parser.add_argument('--pause-punctuation', default='no', help='yes/no')
-    parser.add_argument('--first-chunk-max', type=int, default=220)
-    parser.add_argument('--max-segment-chars', type=int, default=480)
+    parser.add_argument('--first-chunk-max', type=int, default=140)
+    parser.add_argument('--max-segment-chars', type=int, default=280)
     parser.add_argument('--filter-markdown', default='yes')
     parser.add_argument('--filter-urls', default='yes')
     parser.add_argument('--filter-code', default='no')
     parser.add_argument('--replace-symbols', default='yes')
     parser.add_argument('--use-lexicon', default='yes')
     parser.add_argument('--adaptive-prosody', default='yes')
+    parser.add_argument('--summarize', default='no')
     args = parser.parse_args()
 
     if args.print_runtime_dir:
@@ -1665,6 +1748,8 @@ def main():
 
     workdir = args.workdir or get_work_dir()
     raw_text = sys.stdin.read()
+    if to_bool(args.summarize, False):
+        raw_text = condense_or_summarize_text(raw_text)
     count = process_and_write_segments(
         raw_text=raw_text,
         workdir=workdir,

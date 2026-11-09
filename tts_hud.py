@@ -151,6 +151,11 @@ LUCIDE_SVGS: Dict[str, str] = {
         'stroke="{color}" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>'
         '<line x1="7" x2="17" y1="12" y2="12" stroke="{color}" stroke-width="2" stroke-linecap="round"/>'
     ),
+    'more-horizontal': (
+        '<circle cx="12" cy="12" r="1.5" fill="{color}" stroke="{color}" stroke-width="1.5"/>'
+        '<circle cx="19" cy="12" r="1.5" fill="{color}" stroke="{color}" stroke-width="1.5"/>'
+        '<circle cx="5" cy="12" r="1.5" fill="{color}" stroke="{color}" stroke-width="1.5"/>'
+    ),
 }
 
 _ICON_CACHE: Dict[Tuple[str, str, int], QIcon] = {}
@@ -253,20 +258,32 @@ def get_player_hud_stylesheet(theme: str = 'dark') -> str:
                 font-weight: 600;
             }
             #speedPill {
-                background-color: #F1F5F9;
+                background-color: #EEF2FF;
                 color: #4338CA;
-                border: 1px solid rgba(99, 102, 241, 0.35);
+                border: 1px solid rgba(99, 102, 241, 0.45);
                 border-radius: 6px;
-                font-size: 11px;
-                font-weight: 600;
-                padding: 2px 7px;
+                font-size: 12px;
+                font-weight: 700;
+                padding: 3px 9px;
                 min-height: 22px;
-                max-height: 22px;
+                min-width: 52px;
             }
             #speedPill:hover {
-                background-color: #EEF2FF;
+                background-color: #E0E7FF;
                 border-color: #6366F1;
-                color: #3730A3;
+                color: #312E81;
+            }
+            #modeTag {
+                color: #64748B;
+                font-size: 11px;
+                font-weight: 500;
+            }
+            #toolsDrawer {
+                background-color: #F8FAFC;
+                border: 1px solid #E2E8F0;
+                border-radius: 7px;
+                margin-top: 2px;
+                margin-bottom: 2px;
             }
             QPushButton.utilBtn {
                 background-color: transparent;
@@ -511,18 +528,30 @@ def get_player_hud_stylesheet(theme: str = 'dark') -> str:
         #speedPill {
             background-color: #1E212B;
             color: #A5B4FC;
-            border: 1px solid rgba(99, 102, 241, 0.35);
+            border: 1px solid rgba(99, 102, 241, 0.45);
             border-radius: 6px;
-            font-size: 11px;
-            font-weight: 600;
-            padding: 2px 7px;
+            font-size: 12px;
+            font-weight: 700;
+            padding: 3px 9px;
             min-height: 22px;
-            max-height: 22px;
+            min-width: 52px;
         }
         #speedPill:hover {
-            background-color: rgba(99, 102, 241, 0.22);
+            background-color: rgba(99, 102, 241, 0.28);
             border-color: #818CF8;
             color: #FFFFFF;
+        }
+        #modeTag {
+            color: #94A3B8;
+            font-size: 11px;
+            font-weight: 500;
+        }
+        #toolsDrawer {
+            background-color: rgba(30, 33, 43, 0.7);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 7px;
+            margin-top: 2px;
+            margin-bottom: 2px;
         }
         QPushButton.utilBtn {
             background-color: transparent;
@@ -1856,20 +1885,16 @@ class FloatingPlayerWindow(QWidget):
         deck_layout.setContentsMargins(14, 11, 14, 12)
         deck_layout.setSpacing(8)
 
-        # ── Row 1: Header Bar (Status Dot + Title + Utility Controls) ────────
+        # ── Row 1: Header Bar (Prominent Speed + Clean Tag + More Tools + Close) ──
         header_row = QHBoxLayout()
         header_row.setContentsMargins(0, 0, 0, 0)
-        header_row.setSpacing(6)
+        header_row.setSpacing(8)
 
-        self.status_dot = QLabel('●')
-        self.status_dot.setObjectName('statusDot')
-        header_row.addWidget(self.status_dot)
-
+        # Internal labels kept for backward compatibility and text referencing
+        self.status_dot = QLabel('')
         self.title_lbl = QLabel('Speak a Loud')
-        self.title_lbl.setObjectName('playerTitle')
-        header_row.addWidget(self.title_lbl, 1)
 
-        # Speed Pill Button (0.75x .. 2.0x)
+        # Speed Pill Button (0.75x .. 2.0x) - Prominently displayed on the left
         self.btn_speed = QPushButton(f'{self.controller.speed:g}x')
         self.btn_speed.setObjectName('speedPill')
         self.btn_speed.setToolTip('Playback Speed (click to cycle, scroll to adjust, right-click for menu)')
@@ -1880,55 +1905,17 @@ class FloatingPlayerWindow(QWidget):
         self.btn_speed.wheelEvent = self._on_speed_wheel
         header_row.addWidget(self.btn_speed)
 
-        # Add Selection to Queue (+)
-        self.btn_enqueue = self._make_util_btn('plus', 'Add highlighted selection to Queue')
-        self.btn_enqueue.clicked.connect(self.queue_window.enqueue_current_selection)
-        header_row.addWidget(self.btn_enqueue)
+        self.lbl_mode_tag = QLabel('Speech')
+        self.lbl_mode_tag.setObjectName('modeTag')
+        header_row.addWidget(self.lbl_mode_tag)
 
-        # Toggle Live Interactive Transcript (scroll-text)
-        self.btn_transcript = self._make_util_btn('scroll-text', 'Show / Hide Live Transcript (Hotkey: T)')
-        self.btn_transcript.setCheckable(True)
-        self.btn_transcript.clicked.connect(self._toggle_transcript)
-        header_row.addWidget(self.btn_transcript)
+        header_row.addStretch(1)
 
-        # Toggle Queue Window (list-music)
-        self.btn_queue = self._make_util_btn('list-music', 'Show / Hide Playback Queue (Hotkey: Q)')
-        self.btn_queue.setCheckable(True)
-        self.btn_queue.clicked.connect(self._toggle_queue_window)
-        header_row.addWidget(self.btn_queue)
-
-        # OCR Screen Region Speak (scan)
-        self.btn_ocr = self._make_util_btn('scan', 'Read Screen Region via OCR (Hotkey: O)')
-        self.btn_ocr.clicked.connect(self._on_ocr_clicked)
-        header_row.addWidget(self.btn_ocr)
-
-        # Save Audio as MP3 (download)
-        self.btn_save = self._make_util_btn('download', 'Save spoken audio as MP3')
-        self.btn_save.clicked.connect(self._on_save_mp3)
-        header_row.addWidget(self.btn_save)
-
-        # Bookmark Passage (bookmark)
-        self.btn_bookmark = self._make_util_btn('bookmark', 'Bookmark current passage & timestamp (Hotkey: B)')
-        self.btn_bookmark.clicked.connect(self._on_bookmark_clicked)
-        header_row.addWidget(self.btn_bookmark)
-
-        # Export to Anki Flashcard (layers)
-        self.btn_anki = self._make_util_btn('layers', 'Export passage to Anki Flashcard (Hotkey: A)')
-        self.btn_anki.clicked.connect(self._on_anki_clicked)
-        header_row.addWidget(self.btn_anki)
-
-        # Sleep / Pomodoro Timer (moon)
-        self.btn_sleep = self._make_util_btn('moon', 'Sleep Timer: Off (Click / Z to cycle: 15m, 30m, 45m, 60m, End)')
-        self.btn_sleep.setCheckable(True)
-        self.btn_sleep.clicked.connect(self._cycle_sleep_timer)
-        self.btn_sleep.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.btn_sleep.customContextMenuRequested.connect(self._show_sleep_context_menu)
-        header_row.addWidget(self.btn_sleep)
-
-        # Open Settings (sliders)
-        self.btn_settings = self._make_util_btn('sliders', 'Open TTS Settings')
-        self.btn_settings.clicked.connect(self._on_open_settings)
-        header_row.addWidget(self.btn_settings)
+        # More Tools expand/collapse button (•••)
+        self.btn_more = self._make_util_btn('more-horizontal', 'More Tools (Q, O, B, A, Z, T) • Hotkey: M')
+        self.btn_more.setCheckable(True)
+        self.btn_more.clicked.connect(self._toggle_tools_drawer)
+        header_row.addWidget(self.btn_more)
 
         # Close Floating Player (x)
         self.btn_close = self._make_util_btn('x', 'Hide Floating Player')
@@ -1936,6 +1923,66 @@ class FloatingPlayerWindow(QWidget):
         header_row.addWidget(self.btn_close)
 
         deck_layout.addLayout(header_row)
+
+        # ── Expandable More Tools Drawer (collapsed by default) ───────────────
+        self.tools_box = QFrame(self.deck)
+        self.tools_box.setObjectName('toolsDrawer')
+        self.tools_layout = QHBoxLayout(self.tools_box)
+        self.tools_layout.setContentsMargins(6, 4, 6, 4)
+        self.tools_layout.setSpacing(6)
+
+        # Add Selection to Queue (+)
+        self.btn_enqueue = self._make_util_btn('plus', 'Add highlighted selection to Queue')
+        self.btn_enqueue.clicked.connect(self.queue_window.enqueue_current_selection)
+        self.tools_layout.addWidget(self.btn_enqueue)
+
+        # Toggle Live Interactive Transcript (scroll-text)
+        self.btn_transcript = self._make_util_btn('scroll-text', 'Show / Hide Live Transcript (Hotkey: T)')
+        self.btn_transcript.setCheckable(True)
+        self.btn_transcript.clicked.connect(self._toggle_transcript)
+        self.tools_layout.addWidget(self.btn_transcript)
+
+        # Toggle Queue Window (list-music)
+        self.btn_queue = self._make_util_btn('list-music', 'Show / Hide Playback Queue (Hotkey: Q)')
+        self.btn_queue.setCheckable(True)
+        self.btn_queue.clicked.connect(self._toggle_queue_window)
+        self.tools_layout.addWidget(self.btn_queue)
+
+        # OCR Screen Region Speak (scan)
+        self.btn_ocr = self._make_util_btn('scan', 'Read Screen Region via OCR (Hotkey: O)')
+        self.btn_ocr.clicked.connect(self._on_ocr_clicked)
+        self.tools_layout.addWidget(self.btn_ocr)
+
+        # Save Audio as MP3 (download)
+        self.btn_save = self._make_util_btn('download', 'Save spoken audio as MP3')
+        self.btn_save.clicked.connect(self._on_save_mp3)
+        self.tools_layout.addWidget(self.btn_save)
+
+        # Bookmark Passage (bookmark)
+        self.btn_bookmark = self._make_util_btn('bookmark', 'Bookmark current passage & timestamp (Hotkey: B)')
+        self.btn_bookmark.clicked.connect(self._on_bookmark_clicked)
+        self.tools_layout.addWidget(self.btn_bookmark)
+
+        # Export to Anki Flashcard (layers)
+        self.btn_anki = self._make_util_btn('layers', 'Export passage to Anki Flashcard (Hotkey: A)')
+        self.btn_anki.clicked.connect(self._on_anki_clicked)
+        self.tools_layout.addWidget(self.btn_anki)
+
+        # Sleep / Pomodoro Timer (moon)
+        self.btn_sleep = self._make_util_btn('moon', 'Sleep Timer: Off (Click / Z to cycle: 15m, 30m, 45m, 60m, End)')
+        self.btn_sleep.setCheckable(True)
+        self.btn_sleep.clicked.connect(self._cycle_sleep_timer)
+        self.btn_sleep.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.btn_sleep.customContextMenuRequested.connect(self._show_sleep_context_menu)
+        self.tools_layout.addWidget(self.btn_sleep)
+
+        # Open Settings (sliders)
+        self.btn_settings = self._make_util_btn('sliders', 'Open TTS Settings')
+        self.btn_settings.clicked.connect(self._on_open_settings)
+        self.tools_layout.addWidget(self.btn_settings)
+
+        self.tools_box.setVisible(False)
+        deck_layout.addWidget(self.tools_box)
 
         # ── Row 2: Queue Context Banner (only visible when playing from Queue) ─
         self.queue_banner = QLabel('')
@@ -2124,6 +2171,7 @@ class FloatingPlayerWindow(QWidget):
         stop_color = '#E11D48' if target == 'light' else '#FCA5A5'
 
         for btn in (
+            getattr(self, 'btn_more', None),
             getattr(self, 'btn_enqueue', None),
             getattr(self, 'btn_transcript', None),
             getattr(self, 'btn_queue', None),
@@ -2273,10 +2321,20 @@ class FloatingPlayerWindow(QWidget):
         if not self.isVisible():
             return
 
-        # Update Title & Status Dot
-        title = data['title']
-        self.title_lbl.setText(title[:17] + '…' if len(title) > 18 else title)
+        title = data.get('title', 'Speech')
+        self.title_lbl.setText(title)
         self.title_lbl.setToolTip(title)
+
+        if hasattr(self, 'lbl_mode_tag'):
+            raw_title = str(title).strip()
+            if not raw_title or raw_title.lower() in ('speak a loud', 'speech', 'selected text'):
+                tag_txt = 'Speech'
+            elif len(raw_title) > 16:
+                tag_txt = raw_title[:15].rstrip() + '…'
+            else:
+                tag_txt = raw_title
+            self.lbl_mode_tag.setText(tag_txt)
+            self.lbl_mode_tag.setToolTip(raw_title)
 
         eff_spd = data.get('effective_speed', data.get('speed', 1.0))
         raw_spd = data.get('speed', 1.0)
@@ -2654,6 +2712,12 @@ class FloatingPlayerWindow(QWidget):
                 dest += '.mp3'
             self.controller.export_mp3(dest)
 
+    def _toggle_tools_drawer(self):
+        vis = not self.tools_box.isVisible()
+        self.tools_box.setVisible(vis)
+        self.btn_more.setChecked(vis)
+        self.adjustSize()
+
     def _step_speed(self, direction: int):
         cur = self.controller.speed
         idx = 0
@@ -2937,6 +3001,10 @@ class FloatingPlayerWindow(QWidget):
             return
         if key == Qt.Key.Key_T:
             self._toggle_transcript()
+            event.accept()
+            return
+        if key == Qt.Key.Key_M:
+            self._toggle_tools_drawer()
             event.accept()
             return
         if key == Qt.Key.Key_Q:

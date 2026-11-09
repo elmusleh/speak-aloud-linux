@@ -6,10 +6,23 @@ A desktop Text-to-Speech (TTS) studio for Linux with seamless trilingual (**Engl
 
 - **Floating On-Screen Player HUD (`tts_hud.py`)**:
   - Draggable, frameless, always-on-top dark-slate HUD that appears automatically when speaking starts and remembers its screen position.
-  - **Unified Timeline Scrubber**: Displays elapsed time (`0:16`), total duration (`0:43`), and an interactive click-and-drag seek bar across all segments.
-  - **Manual Transport Controls & Hotkeys**: Jump Backward `-10s`, Play / Pause / **Replay at End**, Jump Forward `+10s`, Stop, live **Speed Selector Pill (`0.75x` – `2.0x`)**, and keyboard hotkeys (`Space` play/pause, `←`/`→` seek, `[`/`]` speed, `T` transcript, `Q` queue, `O` OCR, `Esc` hide).
-  - **Live Interactive Sentence Transcript Drawer**: Click the Transcript button (`T`) to view all segmented sentences, auto-scroll with the active highlighted sentence, and click any sentence to jump directly to it.
-  - **One-Click MP3 Export, OCR & Queue Controls**: Save the current speech as MP3 (`⬇`), read unselectable screen regions via OCR (`📷`), add highlighted text to the queue (`+`), or open the Playback Queue (`☰`).
+  - **Compact Essentials & More Tools Drawer**: Essential controls (prominent **Speed Pill**, Play/Pause/Replay, Jump ±10s, Stop, Scrubber, Volume, Close) are always visible and uncluttered. Advanced actions (Enqueue, Transcript, Queue, OCR, Save MP3, Bookmark, Anki, Sleep, Settings) are neatly tucked into an expandable drawer toggled with `...` or <kbd>M</kbd>.
+  - **Prominent Speed Pill & Multilingual Rates**: Displays the active speaking speed (e.g., `1.2x`) clearly on the left without squeezing; clicking cycles through preset speed multipliers while preserving per-language rate scaling.
+  - **Unified Timeline Scrubber with Micro-Tooltips**: Displays elapsed time (`0:16`), total duration (`0:43`), live sentence preview tooltips on mouse hover, and an interactive click-and-drag seek bar across all segments.
+  - **Live Interactive Sentence & Word-Level Karaoke Drawer**: Click Transcript (<kbd>T</kbd>) to view all sentences, auto-scroll with the speech, and see the active word highlight in real-time. Click any sentence to jump directly to it.
+- **Configurable Chunk Sizing & Parallel Synthesis Tuning**:
+  - Fine-tune time-to-first-sound by setting initial chunk size (`first_chunk_max`, default ~140 chars) and standard segment size (`max_segment_chars`, default ~280 chars) in Settings Studio or CLI (`--first-chunk-max`, `--max-segment-chars`).
+  - Staggered parallel synthesis starts chunk 0 with 0ms delay while subsequent chunks synthesize in parallel.
+- **Rock-Solid Screen-Region & Image OCR (`tts_ocr.py` / `speak.sh --ocr`)**:
+  - High-precision screen-region capture with automatic image preprocessing (2.5x Lanczos upscale, grayscale conversion, contrast enhancement) and multi-PSM fallback (`--psm 6`, `--psm 3`, `--psm 11`) to read small terminal and IDE fonts.
+- **AI Text Condenser & Summarizer (`speak.sh --summarize`)**:
+  - Condense long articles or documents into concise, speech-ready bullet summaries before speaking using local Ollama models or fast extractive frequency ranking.
+- **Voice Clarity & Frequency Compensation EQ**:
+  - Optional vocal enhancement chain (`highpass=f=100`, `equalizer=3kHz +3.5dB`, dynamic audio compressor) enabled in Settings Studio to make speech crisp and clear on built-in laptop speakers.
+- **Per-Application Speech Profiles (`~/.config/tts_settings/app_rules.json`)**:
+  - Automatically apply custom voice, rate, and language profiles depending on the focused window (e.g. read code in IDE at 1.5x with technical filters, read PDFs at 1.1x with expressive prosody).
+- **Calibre eBook Library Integration (`speak.sh --calibre`)**:
+  - Search, extract, and queue books directly from your local Calibre eBook library.
 - **Persistent Async Synthesis Worker & Local Piper Fallback (`tts_synth_worker.py`)**:
   - Keeps `edge_tts` warm in memory inside `tts-daemon.py` over `$XDG_RUNTIME_DIR/speak-aloud-$UID/synth.sock` (`0600`), eliminating ~350ms of Python/TLS startup latency per segment.
   - Automatically falls back to local `piper-tts` ONNX neural voice models when offline or rate-limited before falling back to `espeak-ng`.
@@ -69,8 +82,11 @@ chmod +x install.sh
 ### CLI Examples
 ```bash
 ./speak.sh --text "Hello مرحبا Grüße"          # Speak explicit trilingual text
-./speak.sh --file manual.pdf --page 4         # Read specific page from PDF
+./speak.sh --summarize                         # Condense selection into a summary before speaking
+./speak.sh --first-chunk-max 120               # Override initial chunk size for ultra-fast startup
+./speak.sh --file manual.pdf --page 4          # Read specific page from PDF
 ./speak.sh --file book.epub --queue            # Load all EPUB chapters into Playback Queue
+./speak.sh --calibre "Clean Code"              # Read book from local Calibre library
 ./speak.sh --url https://example.com/essay     # Read cleaned web article aloud
 ./speak.sh --ocr                               # Drag screen region to OCR and speak aloud
 ./speak.sh --ocr-image page.png                # OCR an image file and speak aloud

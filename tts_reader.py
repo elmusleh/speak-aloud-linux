@@ -479,11 +479,55 @@ def bundle_documents_to_audiobook(
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+def extract_from_calibre(book_query: str = '') -> List[Dict[str, str]]:
+    """Search local Calibre library via `calibredb list` and extract target book."""
+    calibre_bin = shutil.which('calibredb')
+    if not calibre_bin:
+        sys.stderr.write("calibredb is not installed. Install Calibre via package manager.\n")
+        return []
+    try:
+        proc = subprocess.run(
+            [calibre_bin, 'list', '--fields', 'id,title,authors,formats', '--for-machine'],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if proc.returncode != 0 or not proc.stdout.strip():
+            return []
+        books = json.loads(proc.stdout)
+        if not books:
+            return []
+
+        matched_book = None
+        if book_query:
+            q = book_query.lower()
+            for b in books:
+                if q in str(b.get('title', '')).lower() or q in str(b.get('authors', '')).lower():
+                    matched_book = b
+                    break
+        if not matched_book:
+            matched_book = books[0]
+
+        formats = matched_book.get('formats', [])
+        epub_path = next((f for f in formats if f.lower().endswith('.epub')), None)
+        pdf_path = next((f for f in formats if f.lower().endswith('.pdf')), None)
+        target_path = epub_path or pdf_path or (formats[0] if formats else None)
+        if target_path and os.path.isfile(target_path):
+            if target_path.lower().endswith('.epub'):
+                return extract_from_epub(target_path)
+            elif target_path.lower().endswith('.pdf'):
+                return extract_from_pdf(target_path)
+    except Exception as exc:
+        sys.stderr.write(f"Calibre library extraction error: {exc}\n")
+    return []
+
+
 def main():
     parser = argparse.ArgumentParser(description='Speak a Loud Document & Web Article Reader')
     parser.add_argument('--file', help='Path to PDF or EPUB document')
     parser.add_argument('--page', type=int, help='Page number (PDF only, 1-based)')
     parser.add_argument('--url', help='Webpage URL to extract and read')
+    parser.add_argument('--calibre', help='Search and read book title/author from local Calibre library')
     parser.add_argument('--queue', '-q', action='store_true', help='Enqueue extracted items instead of printing')
     parser.add_argument('--speak', action='store_true', help='Trigger speak.sh on the extracted text')
     parser.add_argument('--bundle', metavar='OUTPUT_FILE', help='Package all extracted chapters into a single MP3 or M4B audiobook')
@@ -500,7 +544,9 @@ def main():
 
     docs: List[Dict[str, str]] = []
 
-    if args.url:
+    if args.calibre:
+        docs = extract_from_calibre(args.calibre)
+    elif args.url:
         doc = extract_from_url(args.url)
         docs.append(doc)
     elif args.file:

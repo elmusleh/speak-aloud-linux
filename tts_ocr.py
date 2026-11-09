@@ -51,31 +51,62 @@ def get_available_tesseract_langs(preferred: Optional[List[str]] = None) -> str:
 
 
 def extract_text_from_image(image_path: str, langs: Optional[str] = None) -> str:
-    """Run `tesseract` OCR on `image_path` and return extracted text."""
+    """Run `tesseract` OCR on `image_path` with image preprocessing and return extracted text."""
     if not image_path or not os.path.isfile(image_path):
         return ''
     tess_bin = shutil.which('tesseract')
     if not tess_bin:
         raise RuntimeError('tesseract is not installed (sudo apt install tesseract-ocr)')
 
-    lang_arg = langs or get_available_tesseract_langs()
-    proc = subprocess.run(
-        [tess_bin, image_path, 'stdout', '-l', lang_arg, '--psm', '6'],
-        capture_output=True,
-        text=True,
-        timeout=20,
-        check=False,
-    )
-    if proc.returncode != 0:
-        # Retry with default language if multi-lang failed
+    # Preprocess image with PIL: upscale 2.5x, grayscale, boost contrast for crisp screen text
+    preprocessed_path = image_path
+    try:
+        from PIL import Image, ImageEnhance
+        with Image.open(image_path) as img:
+            img_gray = img.convert('L')
+            w, h = img_gray.size
+            if w < 1400 and h < 900:
+                scale = max(2, min(4, int(1200 / max(1, w))))
+                img_gray = img_gray.resize((w * scale, h * scale), Image.Resampling.LANCZOS)
+            enhancer = ImageEnhance.Contrast(img_gray)
+            img_gray = enhancer.enhance(1.4)
+            prep_file = tempfile.NamedTemporaryFile(prefix='ocr_prep_', suffix='.png', delete=False)
+            img_gray.save(prep_file.name)
+            prep_file.close()
+            preprocessed_path = prep_file.name
+    except Exception:
+        preprocessed_path = image_path
+
+    try:
+        lang_arg = langs or get_available_tesseract_langs()
+        # Try multiple PSM modes: 6 (uniform block), 3 (auto page), 11 (sparse text)
+        for psm in ['6', '3', '11']:
+            proc = subprocess.run(
+                [tess_bin, preprocessed_path, 'stdout', '-l', lang_arg, '--psm', psm],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+            out = (proc.stdout or '').strip()
+            if out and len(out) >= 2:
+                return out
+
+        # Fallback to default without language arg
         proc = subprocess.run(
-            [tess_bin, image_path, 'stdout'],
+            [tess_bin, preprocessed_path, 'stdout'],
             capture_output=True,
             text=True,
-            timeout=20,
+            timeout=15,
             check=False,
         )
-    return (proc.stdout or '').strip()
+        return (proc.stdout or '').strip()
+    finally:
+        if preprocessed_path != image_path and os.path.exists(preprocessed_path):
+            try:
+                os.unlink(preprocessed_path)
+            except OSError:
+                pass
 
 
 def capture_region_with_qt(output_png: str) -> bool:
@@ -146,6 +177,7 @@ def capture_region_with_qt(output_png: str) -> bool:
                 self.update()
             elif event.button() == Qt.MouseButton.RightButton:
                 self.close()
+                QApplication.quit()
 
         def mouseMoveEvent(self, event):
             if self.origin is not None:
@@ -155,7 +187,7 @@ def capture_region_with_qt(output_png: str) -> bool:
         def mouseReleaseEvent(self, event):
             if event.button() == Qt.MouseButton.LeftButton and self.origin and self.current:
                 sel = QRect(self.origin, self.current).normalized()
-                if sel.width() >= 10 and sel.height() >= 10:
+                if sel.width() >= 8 and sel.height() >= 8:
                     dpr = self.pixmap.devicePixelRatio()
                     crop_rect = QRect(
                         int(sel.x() * dpr),
@@ -167,10 +199,16 @@ def capture_region_with_qt(output_png: str) -> bool:
                     if not cropped.isNull() and cropped.save(output_png, 'PNG'):
                         self.captured = True
                 self.close()
+                QApplication.quit()
 
         def keyPressEvent(self, event):
             if event.key() == Qt.Key.Key_Escape:
                 self.close()
+                QApplication.quit()
+
+        def closeEvent(self, event):
+            QApplication.quit()
+            super().closeEvent(event)
 
     overlay = RegionOverlay(full_pixmap)
     overlay.showFullScreen()

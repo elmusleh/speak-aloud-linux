@@ -290,21 +290,29 @@ async def synthesize_segment_async(
                         except Exception:
                             pass
 
-                    # Store in SHA256 Audio Cache
-                    if use_cache:
+                    # Store in SHA256 Audio Cache (with header checksum validation)
+                    if use_cache and os.path.isfile(output_path) and os.path.getsize(output_path) >= 256:
                         try:
-                            cpath = get_audio_cache_path(text, norm_voice, norm_rate, norm_pitch)
-                            if read_bool_config('encrypt_audio_cache', False):
-                                with open(output_path, 'rb') as src_f:
-                                    raw_audio = src_f.read()
-                                enc_audio = encrypt_audio_data(raw_audio)
-                                with open(cpath, 'wb') as dst_f:
-                                    dst_f.write(enc_audio)
-                            else:
-                                shutil.copyfile(output_path, cpath)
-                            words_path = os.path.splitext(output_path)[0] + '.words.json'
-                            if os.path.isfile(words_path):
-                                shutil.copyfile(words_path, os.path.splitext(cpath)[0] + '.words.json')
+                            with open(output_path, 'rb') as vf:
+                                hdr = vf.read(4)
+                            is_valid_audio = (
+                                hdr.startswith(b'ID3')
+                                or hdr.startswith(b'RIFF')
+                                or (len(hdr) >= 2 and hdr[0] == 0xFF and (hdr[1] & 0xE0) == 0xE0)
+                            )
+                            if is_valid_audio:
+                                cpath = get_audio_cache_path(text, norm_voice, norm_rate, norm_pitch)
+                                if read_bool_config('encrypt_audio_cache', False):
+                                    with open(output_path, 'rb') as src_f:
+                                        raw_audio = src_f.read()
+                                    enc_audio = encrypt_audio_data(raw_audio)
+                                    with open(cpath, 'wb') as dst_f:
+                                        dst_f.write(enc_audio)
+                                else:
+                                    shutil.copyfile(output_path, cpath)
+                                words_path = os.path.splitext(output_path)[0] + '.words.json'
+                                if os.path.isfile(words_path):
+                                    shutil.copyfile(words_path, os.path.splitext(cpath)[0] + '.words.json')
                         except Exception:
                             pass
 

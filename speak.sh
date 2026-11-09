@@ -118,6 +118,10 @@ while [[ $# -gt 0 ]]; do
         --page)               PAGE_INPUT="$2";                 shift 2 ;;
         --url)                URL_INPUT="$2";                  shift 2 ;;
         --bundle)             BUNDLE_OUTPUT="$2";              shift 2 ;;
+        --summarize)          SUMMARIZE_MODE="yes";            shift 1 ;;
+        --first-chunk-max)    OVERRIDE_FIRST_CHUNK="$2";       shift 2 ;;
+        --max-segment-chars)  OVERRIDE_MAX_SEG="$2";           shift 2 ;;
+        --voice-clarity-eq)   OVERRIDE_VOICE_CLARITY="$2";     shift 2 ;;
         --ocr)                OCR_MODE="yes";                  shift 1 ;;
         --ocr-image)          OCR_MODE="yes"; OCR_IMAGE="$2";  shift 2 ;;
         --queue|-q)           TTS_MODE="queue";                shift 1 ;;
@@ -183,6 +187,7 @@ if [ "$OCR_MODE" = "yes" ] && [ -z "$OVERRIDE_TEXT" ]; then
         OVERRIDE_TEXT=$(python3 "$SCRIPT_DIR/tts_ocr.py" 2>/dev/null || echo "")
     fi
     if [ -z "$OVERRIDE_TEXT" ]; then
+        notify-send "OCR Speak" "No readable text detected in selected screen region." 2>/dev/null || true
         exit 0
     fi
 fi
@@ -449,6 +454,28 @@ FILTER_CODE=$(normalize_bool "$(read_cfg_first "no" "$CONFIG_DIR/skip_code" "$CO
 REPLACE_SYMBOLS=$(normalize_bool "$(read_cfg_first "yes" "$CONFIG_DIR/replace_symbols")" "yes")
 USE_LEXICON=$(normalize_bool "$(read_cfg_first "yes" "$CONFIG_DIR/use_lexicon")" "yes")
 ADAPTIVE_PROSODY=$(normalize_bool "$(read_cfg_first "yes" "$CONFIG_DIR/adaptive_prosody")" "yes")
+VOICE_CLARITY_EQ=$(normalize_bool "${OVERRIDE_VOICE_CLARITY:-$(read_cfg_first "no" "$CONFIG_DIR/voice_clarity_eq")}" "no")
+FIRST_CHUNK_MAX="${OVERRIDE_FIRST_CHUNK:-$(read_cfg_first "140" "$CONFIG_DIR/first_chunk_max")}"
+MAX_SEGMENT_CHARS="${OVERRIDE_MAX_SEG:-$(read_cfg_first "280" "$CONFIG_DIR/max_segment_chars")}"
+SUMMARIZE_ARG="no"
+[ "${SUMMARIZE_MODE:-no}" = "yes" ] && SUMMARIZE_ARG="yes"
+
+# ── Optional: Per-App Speech Profile Rules ────────────────────────────────────
+APP_RULES_FILE="$CONFIG_DIR/app_rules.json"
+if [ -f "$APP_RULES_FILE" ] && command -v xprop &>/dev/null && command -v xdotool &>/dev/null; then
+    ACTIVE_WID=$(xdotool getactivewindow 2>/dev/null || true)
+    if [ -n "$ACTIVE_WID" ]; then
+        ACTIVE_CLASS=$(xprop -id "$ACTIVE_WID" WM_CLASS 2>/dev/null | tr '[:upper:]' '[:lower:]' | tr -d '"' | tr ',' ' ')
+        for c in $ACTIVE_CLASS; do
+            RULE_SPD=$(python3 -c "import json; r = json.load(open('$APP_RULES_FILE')).get('$c', {}); print(r.get('speed', ''))" 2>/dev/null || true)
+            if [ -n "$RULE_SPD" ] && [ -z "$OVERRIDE_SPEED" ]; then
+                INITIAL_SPEED="$RULE_SPD"
+                debug "Applied per-app rule for class '$c': speed $RULE_SPD"
+                break
+            fi
+        done
+    fi
+fi
 
 # ── Optional: translate text before TTS ───────────────────────────────────────
 if [ "$TRANSLATE_ENABLED" = "yes" ] && [ -n "$TRANSLATE_TARGET" ] && [ -n "$TRANSLATE_KEY" ]; then
@@ -482,7 +509,10 @@ SEG_COUNT=$(printf '%s' "$TEXT" | python3 "$SCRIPT_DIR/tts_text_processor.py" \
     --filter-code "$FILTER_CODE" \
     --replace-symbols "$REPLACE_SYMBOLS" \
     --use-lexicon "$USE_LEXICON" \
-    --adaptive-prosody "$ADAPTIVE_PROSODY" 2>/dev/null)
+    --adaptive-prosody "$ADAPTIVE_PROSODY" \
+    --first-chunk-max "$FIRST_CHUNK_MAX" \
+    --max-segment-chars "$MAX_SEGMENT_CHARS" \
+    --summarize "$SUMMARIZE_ARG" 2>/dev/null)
 
 if [ -z "$SEG_COUNT" ] || ! [ "$SEG_COUNT" -ge 1 ] 2>/dev/null; then
     if [ -n "$OVERRIDE_TEXT" ]; then
@@ -783,7 +813,11 @@ if [ "$TTS_MODE" = "play" ]; then
     fi
 
     debug "Starting mpv on $FIRST_FILE (seg_$CURRENT_IDX, speed=$INITIAL_SPEED)"
-    mpv "$FIRST_FILE" --no-terminal --idle --gapless-audio=yes --audio-buffer=0.2 --speed="$INITIAL_SPEED" --input-ipc-server="$MPV_SOCKET" 200>&- &
+    MPV_AUDIO_FILTERS=()
+    if [ "$VOICE_CLARITY_EQ" = "yes" ]; then
+        MPV_AUDIO_FILTERS=(--af="highpass=f=100,equalizer=f=3000:width_type=h:width=1000:g=3.5,acompressor")
+    fi
+    mpv "$FIRST_FILE" --no-terminal --idle --gapless-audio=yes --audio-buffer=0.2 --speed="$INITIAL_SPEED" "${MPV_AUDIO_FILTERS[@]}" --input-ipc-server="$MPV_SOCKET" 200>&- &
     MPV_PID=$!
 
     # ── Background: append remaining segments in order via IPC ──────────────

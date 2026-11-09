@@ -503,6 +503,36 @@ class TTSSettingsWindow(QDialog):
         delay_row.addStretch(1)
         layout.addLayout(delay_row)
 
+        sec_chunk = QLabel('Audio Chunking & Latency Tuning')
+        sec_chunk.setProperty('class', 'sectionHeader')
+        layout.addWidget(sec_chunk)
+
+        chunk_row = QHBoxLayout()
+        chunk_row.addWidget(QLabel('Initial Chunk Size (chars):'))
+        self.sp_first_chunk = QSpinBox()
+        self.sp_first_chunk.setRange(60, 400)
+        self.sp_first_chunk.setValue(140)
+        self.sp_first_chunk.setSingleStep(10)
+        self.sp_first_chunk.setToolTip('Smaller size (<150 chars) starts playback in <0.4s while subsequent chunks synthesize in parallel')
+        chunk_row.addWidget(self.sp_first_chunk)
+
+        chunk_row.addWidget(QLabel('Segment Size (chars):'))
+        self.sp_max_segment = QSpinBox()
+        self.sp_max_segment.setRange(100, 800)
+        self.sp_max_segment.setValue(280)
+        self.sp_max_segment.setSingleStep(20)
+        self.sp_max_segment.setToolTip('Size of subsequent speech segments processed in parallel')
+        chunk_row.addWidget(self.sp_max_segment)
+        chunk_row.addStretch(1)
+        layout.addLayout(chunk_row)
+
+        sec_audio_eq = QLabel('Voice Clarity & Audio Enhancement')
+        sec_audio_eq.setProperty('class', 'sectionHeader')
+        layout.addWidget(sec_audio_eq)
+
+        self.chk_voice_clarity = QCheckBox('Enable Voice Clarity EQ Profile (vocal presence boost & 100Hz rumble highpass filter)')
+        layout.addWidget(self.chk_voice_clarity)
+
         layout.addStretch(1)
         return w
 
@@ -669,6 +699,9 @@ class TTSSettingsWindow(QDialog):
         self.ed_anki_model.setText(read_cfg('anki_model', 'Basic'))
         self.chk_adaptive_prosody.setChecked(read_bool_cfg('adaptive_prosody', True))
         self.chk_auto_scroll.setChecked(read_bool_cfg('auto_scroll_window', False))
+        self.sp_first_chunk.setValue(max(60, min(400, read_int_cfg('first_chunk_max', 140, strip_chars=''))))
+        self.sp_max_segment.setValue(max(100, min(800, read_int_cfg('max_segment_chars', 280, strip_chars=''))))
+        self.chk_voice_clarity.setChecked(read_bool_cfg('voice_clarity_eq', False))
         self.chk_filter_md.setChecked(read_bool_cfg('filter_markdown', True))
         self.chk_filter_urls.setChecked(read_bool_cfg('filter_urls', True))
         self.chk_filter_code.setChecked(read_bool_cfg('skip_code', read_bool_cfg('filter_code', False)))
@@ -706,6 +739,9 @@ class TTSSettingsWindow(QDialog):
         anki_model = self.ed_anki_model.text().strip() or 'Basic'
         adaptive_prosody = 'yes' if self.chk_adaptive_prosody.isChecked() else 'no'
         auto_scroll = 'yes' if self.chk_auto_scroll.isChecked() else 'no'
+        first_chunk = str(self.sp_first_chunk.value())
+        max_seg = str(self.sp_max_segment.value())
+        clarity_eq = 'yes' if self.chk_voice_clarity.isChecked() else 'no'
         f_md = 'yes' if self.chk_filter_md.isChecked() else 'no'
         f_urls = 'yes' if self.chk_filter_urls.isChecked() else 'no'
         f_code = 'yes' if self.chk_filter_code.isChecked() else 'no'
@@ -754,6 +790,9 @@ class TTSSettingsWindow(QDialog):
             'anki_model': anki_model,
             'adaptive_prosody': adaptive_prosody,
             'auto_scroll_window': auto_scroll,
+            'first_chunk_max': first_chunk,
+            'max_segment_chars': max_seg,
+            'voice_clarity_eq': clarity_eq,
         })
 
         # Also maintain legacy flat filenames for backward compatibility
@@ -776,6 +815,9 @@ class TTSSettingsWindow(QDialog):
         write_cfg('anki_model', anki_model)
         write_cfg('adaptive_prosody', adaptive_prosody)
         write_cfg('auto_scroll_window', auto_scroll)
+        write_cfg('first_chunk_max', first_chunk)
+        write_cfg('max_segment_chars', max_seg)
+        write_cfg('voice_clarity_eq', clarity_eq)
         write_cfg('crossfade_audio', crossfade)
         write_cfg('auto_pause_bluetooth', pause_bt)
         write_cfg('encrypt_audio_cache', encrypt_c)

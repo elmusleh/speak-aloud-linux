@@ -758,6 +758,7 @@ def test_effective_speed_and_language_switching(tmp_path, monkeypatch):
     cfg_dir = tmp_path / 'cfg'
     cfg_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr('tts_hud.CONFIG_DIR', str(cfg_dir))
+    monkeypatch.setattr('tts_hud.MPV_SOCKET', str(tmp_path / 'nonexistent_mpv.sock'))
 
     manifest = {
         'session_id': 'sess_speed_test',
@@ -1045,6 +1046,63 @@ def test_reader_sandbox_url_fetch():
     assert isinstance(res, dict)
     assert 'Example Domain' in res.get('title', '')
     assert 'documentation examples' in res.get('text', '').lower() or 'domain' in res.get('text', '').lower()
+
+
+def test_condense_or_summarize_text():
+    from tts_text_processor import condense_or_summarize_text
+    long_passage = " ".join([
+        f"Paragraph sentence {i} presents fundamental details regarding asynchronous progressive neural speech pipeline execution."
+        for i in range(1, 15)
+    ])
+    summarized = condense_or_summarize_text(long_passage, max_sentences=3)
+    assert len(summarized) < len(long_passage)
+    assert len(summarized) > 30
+
+
+def test_chunk_tuning_settings(tmp_path):
+    from tts_text_processor import TTSSettingsStore
+    store = TTSSettingsStore(config_dir=str(tmp_path))
+    val = store.validate({
+        'first_chunk_max': '120',
+        'max_segment_chars': '260',
+        'voice_clarity_eq': 'yes',
+    })
+    assert val['first_chunk_max'] == '120'
+    assert val['max_segment_chars'] == '260'
+    assert val['voice_clarity_eq'] == 'yes'
+
+
+def test_more_tools_drawer_toggle():
+    from PyQt6.QtWidgets import QApplication
+    from tts_hud import FloatingPlayerWindow, MPVTimelineController, QueueManagerWindow
+    _app = QApplication.instance() or QApplication([])
+
+    ctrl = MPVTimelineController()
+    q_win = QueueManagerWindow()
+    player = FloatingPlayerWindow(ctrl, q_win)
+    player.show()
+
+    # Drawer should be hidden in compact mode by default
+    assert player.tools_box.isVisible() is False
+
+    # Toggling opens drawer
+    player._toggle_tools_drawer()
+    assert player.tools_box.isVisible() is True
+    assert player.btn_more.isChecked() is True
+
+    # Toggling again closes drawer
+    player._toggle_tools_drawer()
+    assert player.tools_box.isVisible() is False
+    assert player.btn_more.isChecked() is False
+    player.hide()
+
+
+def test_calibre_extraction_handling():
+    from tts_reader import extract_from_calibre
+    # When calibredb is missing or query not found, returns list cleanly without error
+    res = extract_from_calibre('non_existent_book_12345')
+    assert isinstance(res, list)
+
 
 
 
