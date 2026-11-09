@@ -354,6 +354,18 @@ class TTSSettingsWindow(QDialog):
         self.chk_duck_audio = QCheckBox('Automatically duck background audio (Spotify, Firefox) while speaking')
         layout.addWidget(self.chk_duck_audio)
 
+        theme_row = QHBoxLayout()
+        theme_lbl = QLabel('HUD Theme:')
+        theme_lbl.setStyleSheet('font-size: 11px; font-weight: 500;')
+        theme_row.addWidget(theme_lbl)
+        self.cb_theme = QComboBox()
+        self.cb_theme.addItem('System Default (Auto-detect)', 'auto')
+        self.cb_theme.addItem('Studio Dark', 'dark')
+        self.cb_theme.addItem('Clean Light', 'light')
+        theme_row.addWidget(self.cb_theme)
+        theme_row.addStretch(1)
+        layout.addLayout(theme_row)
+
         pos_row = QHBoxLayout()
         btn_reset_pos = QPushButton('Reset Floating Player && Queue Positions')
         btn_reset_pos.setObjectName('secondaryBtn')
@@ -547,6 +559,10 @@ class TTSSettingsWindow(QDialog):
         self.chk_show_player.setChecked(read_bool_cfg('show_hud', read_bool_cfg('show_floating_player', True)))
         self.chk_enable_replay.setChecked(read_bool_cfg('replay_at_end', read_bool_cfg('enable_replay', True)))
         self.chk_duck_audio.setChecked(read_bool_cfg('duck_background_audio', False))
+        theme_val = read_cfg('ui_theme', 'auto').strip().lower()
+        if theme_val not in ('auto', 'dark', 'light'):
+            theme_val = 'auto'
+        self._set_combo_by_data(self.cb_theme, theme_val)
         self.chk_filter_md.setChecked(read_bool_cfg('filter_markdown', True))
         self.chk_filter_urls.setChecked(read_bool_cfg('filter_urls', True))
         self.chk_filter_code.setChecked(read_bool_cfg('skip_code', read_bool_cfg('filter_code', False)))
@@ -574,6 +590,7 @@ class TTSSettingsWindow(QDialog):
         show_hud = 'yes' if self.chk_show_player.isChecked() else 'no'
         replay = 'yes' if self.chk_enable_replay.isChecked() else 'no'
         duck_bg = 'yes' if self.chk_duck_audio.isChecked() else 'no'
+        ui_theme = self.cb_theme.currentData() or 'auto'
         f_md = 'yes' if self.chk_filter_md.isChecked() else 'no'
         f_urls = 'yes' if self.chk_filter_urls.isChecked() else 'no'
         f_code = 'yes' if self.chk_filter_code.isChecked() else 'no'
@@ -612,6 +629,7 @@ class TTSSettingsWindow(QDialog):
             'translate_from': src_lang,
             'translate_api_key': t_key,
             'duck_background_audio': duck_bg,
+            'ui_theme': ui_theme,
         })
 
         # Also maintain legacy flat filenames for backward compatibility
@@ -627,6 +645,7 @@ class TTSSettingsWindow(QDialog):
         write_cfg('filter_code', f_code)
         write_cfg('pause_delay_ms', p_delay)
         write_cfg('translate_target', self.cb_trans_target.currentData() or '')
+        write_cfg('ui_theme', ui_theme)
 
         # Save lexicon.json atomically
         lex_map = {}

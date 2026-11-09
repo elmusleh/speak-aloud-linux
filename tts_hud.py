@@ -62,10 +62,12 @@ from tts_text_processor import (
     atomic_write_json,
     atomic_write_text,
     ensure_runtime_symlinks,
+    get_effective_theme,
     get_mpv_socket_path,
     get_queue_path,
     get_status_path,
     get_work_dir,
+    read_str_config,
 )
 
 ensure_runtime_symlinks()
@@ -225,6 +227,716 @@ def write_config(filename: str, value: str) -> None:
             f.write(str(value).strip() + '\n')
     except Exception:
         pass
+
+
+def get_player_hud_stylesheet(theme: str = 'dark') -> str:
+    """Return dark or light stylesheet for FloatingPlayerWindow based on active theme."""
+    if theme == 'light':
+        return """
+            #playerDeck {
+                background-color: #FFFFFF;
+                border: 1px solid rgba(0, 0, 0, 0.14);
+                border-radius: 14px;
+            }
+            #statusDot {
+                color: #10B981;
+                font-size: 11px;
+                padding-right: 2px;
+            }
+            #playerTitle {
+                color: #1E293B;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            #speedPill {
+                background-color: #F1F5F9;
+                color: #4338CA;
+                border: 1px solid rgba(99, 102, 241, 0.35);
+                border-radius: 6px;
+                font-size: 11px;
+                font-weight: 600;
+                padding: 2px 7px;
+                min-height: 22px;
+                max-height: 22px;
+            }
+            #speedPill:hover {
+                background-color: #EEF2FF;
+                border-color: #6366F1;
+                color: #3730A3;
+            }
+            QPushButton.utilBtn {
+                background-color: transparent;
+                border: 1px solid transparent;
+                border-radius: 6px;
+                min-width: 24px;
+                max-width: 24px;
+                min-height: 24px;
+                max-height: 24px;
+                padding: 0px;
+            }
+            QPushButton.utilBtn:hover {
+                background-color: rgba(0, 0, 0, 0.06);
+                border-color: rgba(0, 0, 0, 0.10);
+            }
+            QPushButton.utilBtn:checked {
+                background-color: rgba(99, 102, 241, 0.15);
+                border-color: #6366F1;
+            }
+            #queueBanner {
+                background-color: rgba(99, 102, 241, 0.10);
+                color: #4338CA;
+                border-radius: 5px;
+                padding: 2px 6px;
+                font-size: 11px;
+                font-weight: 600;
+            }
+            #timeLabel {
+                color: #475569;
+                font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace;
+                font-size: 11px;
+                font-weight: 500;
+                min-width: 34px;
+            }
+            #seekSlider::groove:horizontal {
+                height: 6px;
+                background: #E2E8F0;
+                border: 1px solid rgba(0, 0, 0, 0.08);
+                border-radius: 3px;
+            }
+            #seekSlider::sub-page:horizontal {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #6366F1, stop:1 #4F46E5);
+                border-radius: 3px;
+            }
+            #seekSlider::handle:horizontal {
+                background: #FFFFFF;
+                border: 2px solid #6366F1;
+                width: 12px;
+                height: 12px;
+                margin: -4px 0;
+                border-radius: 7px;
+            }
+            #seekSlider::handle:horizontal:hover {
+                background: #F8FAFC;
+                border-color: #4F46E5;
+            }
+            #stateHint {
+                color: #64748B;
+                font-size: 11px;
+                font-weight: 500;
+                min-width: 68px;
+            }
+            #transportSecondaryBtn {
+                background-color: #F8FAFC;
+                border: 1px solid rgba(0, 0, 0, 0.10);
+                border-radius: 8px;
+                min-width: 34px;
+                max-width: 34px;
+                min-height: 32px;
+                max-height: 32px;
+            }
+            #transportSecondaryBtn:hover {
+                background-color: #F1F5F9;
+                border-color: rgba(0, 0, 0, 0.18);
+            }
+            #transportSecondaryBtn:disabled {
+                opacity: 0.4;
+            }
+            #transportHeroBtn {
+                background-color: #6366F1;
+                border: 1px solid #4F46E5;
+                border-radius: 10px;
+                min-width: 44px;
+                max-width: 44px;
+                min-height: 36px;
+                max-height: 36px;
+            }
+            #transportHeroBtn:hover {
+                background-color: #4F46E5;
+            }
+            #transportStopBtn {
+                background-color: rgba(244, 63, 94, 0.10);
+                border: 1px solid rgba(244, 63, 94, 0.25);
+                border-radius: 8px;
+                min-width: 32px;
+                max-width: 32px;
+                min-height: 32px;
+                max-height: 32px;
+            }
+            #transportStopBtn:hover {
+                background-color: rgba(244, 63, 94, 0.20);
+                border-color: #F43F5E;
+            }
+            #chunkBox {
+                background-color: #F8FAFC;
+                border: 1px solid rgba(0, 0, 0, 0.08);
+                border-radius: 8px;
+            }
+            #chunkPhaseText {
+                color: #475569;
+                font-size: 11px;
+                font-weight: 500;
+            }
+            #chunkPctText {
+                color: #4338CA;
+                font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace;
+                font-size: 11px;
+                font-weight: 600;
+            }
+            #chunkBarBg {
+                background-color: #E2E8F0;
+                border-radius: 2px;
+            }
+            #chunkBarFill {
+                background-color: #6366F1;
+                border-radius: 2px;
+            }
+            QLabel.chunkPillPending {
+                background-color: #F1F5F9;
+                color: #64748B;
+                border: 1px solid rgba(0, 0, 0, 0.08);
+                border-radius: 4px;
+                font-size: 10px;
+                font-weight: 600;
+                padding: 1px 5px;
+            }
+            QLabel.chunkPillProcessing {
+                background-color: rgba(99, 102, 241, 0.15);
+                color: #4338CA;
+                border: 1px solid #6366F1;
+                border-radius: 4px;
+                font-size: 10px;
+                font-weight: 600;
+                padding: 1px 5px;
+            }
+            QLabel.chunkPillCompleted {
+                background-color: rgba(16, 185, 129, 0.14);
+                color: #059669;
+                border: 1px solid rgba(16, 185, 129, 0.35);
+                border-radius: 4px;
+                font-size: 10px;
+                font-weight: 600;
+                padding: 1px 5px;
+            }
+            QLabel.chunkPillFailed {
+                background-color: rgba(244, 63, 94, 0.12);
+                color: #E11D48;
+                border: 1px solid rgba(244, 63, 94, 0.35);
+                border-radius: 4px;
+                font-size: 10px;
+                font-weight: 600;
+                padding: 1px 5px;
+            }
+            #transcriptBox {
+                background-color: #F8FAFC;
+                border: 1px solid rgba(0, 0, 0, 0.08);
+                border-radius: 8px;
+            }
+            #transcriptHeader {
+                color: #4338CA;
+                font-size: 10px;
+                font-weight: 600;
+            }
+            #hotkeyHint {
+                color: #94A3B8;
+                font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace;
+                font-size: 9px;
+            }
+            #transcriptScroll, #transcriptListWidget {
+                background: transparent;
+                border: none;
+            }
+            QFrame.transcriptRow {
+                background-color: #F1F5F9;
+                border: 1px solid rgba(0, 0, 0, 0.06);
+                border-radius: 6px;
+            }
+            QFrame.transcriptRow:hover {
+                background-color: #E2E8F0;
+                border-color: rgba(0, 0, 0, 0.12);
+            }
+            QFrame.transcriptRowActive {
+                background-color: rgba(99, 102, 241, 0.12);
+                border: 1px solid #6366F1;
+                border-radius: 6px;
+            }
+            QLabel.transcriptText {
+                color: #334155;
+                font-size: 11px;
+            }
+            QLabel.transcriptTextActive {
+                color: #0F172A;
+                font-size: 11px;
+                font-weight: 600;
+            }
+            QMenu {
+                background-color: #FFFFFF;
+                color: #1E293B;
+                border: 1px solid rgba(0, 0, 0, 0.12);
+                border-radius: 8px;
+                padding: 4px;
+            }
+            QMenu::item {
+                padding: 5px 16px;
+                border-radius: 4px;
+                font-size: 11px;
+                color: #1E293B;
+            }
+            QMenu::item:selected {
+                background-color: #6366F1;
+                color: #FFFFFF;
+            }
+        """
+
+    # Default Dark (Studio Obsidian Slate)
+    return """
+        #playerDeck {
+            background-color: #16181E;
+            border: 1px solid rgba(255, 255, 255, 0.10);
+            border-radius: 14px;
+        }
+        #statusDot {
+            color: #10B981;
+            font-size: 11px;
+            padding-right: 2px;
+        }
+        #playerTitle {
+            color: #F3F4F6;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        #speedPill {
+            background-color: #1E212B;
+            color: #A5B4FC;
+            border: 1px solid rgba(99, 102, 241, 0.35);
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 600;
+            padding: 2px 7px;
+            min-height: 22px;
+            max-height: 22px;
+        }
+        #speedPill:hover {
+            background-color: rgba(99, 102, 241, 0.22);
+            border-color: #818CF8;
+            color: #FFFFFF;
+        }
+        QPushButton.utilBtn {
+            background-color: transparent;
+            border: 1px solid transparent;
+            border-radius: 6px;
+            min-width: 24px;
+            max-width: 24px;
+            min-height: 24px;
+            max-height: 24px;
+            padding: 0px;
+        }
+        QPushButton.utilBtn:hover {
+            background-color: rgba(255, 255, 255, 0.09);
+            border-color: rgba(255, 255, 255, 0.12);
+        }
+        QPushButton.utilBtn:checked {
+            background-color: rgba(99, 102, 241, 0.25);
+            border-color: #6366F1;
+        }
+        #queueBanner {
+            background-color: rgba(99, 102, 241, 0.12);
+            color: #A5B4FC;
+            border-radius: 5px;
+            padding: 2px 6px;
+            font-size: 11px;
+            font-weight: 500;
+        }
+        #timeLabel {
+            color: #9CA3AF;
+            font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace;
+            font-size: 11px;
+            font-weight: 500;
+            min-width: 34px;
+        }
+        #seekSlider::groove:horizontal {
+            height: 6px;
+            background: #0E1015;
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            border-radius: 3px;
+        }
+        #seekSlider::sub-page:horizontal {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #6366F1, stop:1 #818CF8);
+            border-radius: 3px;
+        }
+        #seekSlider::handle:horizontal {
+            background: #F9FAFB;
+            border: 2px solid #6366F1;
+            width: 12px;
+            height: 12px;
+            margin: -4px 0;
+            border-radius: 7px;
+        }
+        #seekSlider::handle:horizontal:hover {
+            background: #FFFFFF;
+            border-color: #818CF8;
+        }
+        #stateHint {
+            color: #6B7280;
+            font-size: 11px;
+            font-weight: 500;
+            min-width: 68px;
+        }
+        #transportSecondaryBtn {
+            background-color: #1E212B;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 8px;
+            min-width: 34px;
+            max-width: 34px;
+            min-height: 32px;
+            max-height: 32px;
+        }
+        #transportSecondaryBtn:hover {
+            background-color: #282C3A;
+            border-color: rgba(255, 255, 255, 0.18);
+        }
+        #transportSecondaryBtn:disabled {
+            opacity: 0.4;
+        }
+        #transportHeroBtn {
+            background-color: #6366F1;
+            border: 1px solid #818CF8;
+            border-radius: 10px;
+            min-width: 44px;
+            max-width: 44px;
+            min-height: 36px;
+            max-height: 36px;
+        }
+        #transportHeroBtn:hover {
+            background-color: #818CF8;
+        }
+        #transportStopBtn {
+            background-color: rgba(244, 63, 94, 0.12);
+            border: 1px solid rgba(244, 63, 94, 0.28);
+            border-radius: 8px;
+            min-width: 32px;
+            max-width: 32px;
+            min-height: 32px;
+            max-height: 32px;
+        }
+        #transportStopBtn:hover {
+            background-color: rgba(244, 63, 94, 0.24);
+            border-color: #F43F5E;
+        }
+        #chunkBox {
+            background-color: #111318;
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            border-radius: 8px;
+        }
+        #chunkPhaseText {
+            color: #9CA3AF;
+            font-size: 11px;
+            font-weight: 500;
+        }
+        #chunkPctText {
+            color: #818CF8;
+            font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        #chunkBarBg {
+            background-color: #1E212B;
+            border-radius: 2px;
+        }
+        #chunkBarFill {
+            background-color: #6366F1;
+            border-radius: 2px;
+        }
+        QLabel.chunkPillPending {
+            background-color: #1C1F28;
+            color: #6B7280;
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            border-radius: 4px;
+            font-size: 10px;
+            font-weight: 600;
+            padding: 1px 5px;
+        }
+        QLabel.chunkPillProcessing {
+            background-color: rgba(99, 102, 241, 0.22);
+            color: #A5B4FC;
+            border: 1px solid #6366F1;
+            border-radius: 4px;
+            font-size: 10px;
+            font-weight: 600;
+            padding: 1px 5px;
+        }
+        QLabel.chunkPillCompleted {
+            background-color: rgba(16, 185, 129, 0.16);
+            color: #34D399;
+            border: 1px solid rgba(16, 185, 129, 0.40);
+            border-radius: 4px;
+            font-size: 10px;
+            font-weight: 600;
+            padding: 1px 5px;
+        }
+        QLabel.chunkPillFailed {
+            background-color: rgba(244, 63, 94, 0.18);
+            color: #FB7185;
+            border: 1px solid rgba(244, 63, 94, 0.45);
+            border-radius: 4px;
+            font-size: 10px;
+            font-weight: 600;
+            padding: 1px 5px;
+        }
+        #transcriptBox {
+            background-color: #111318;
+            border: 1px solid rgba(255, 255, 255, 0.07);
+            border-radius: 8px;
+        }
+        #transcriptHeader {
+            color: #A5B4FC;
+            font-size: 10px;
+            font-weight: 600;
+        }
+        #hotkeyHint {
+            color: #6B7280;
+            font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace;
+            font-size: 9px;
+        }
+        #transcriptScroll, #transcriptListWidget {
+            background: transparent;
+            border: none;
+        }
+        QFrame.transcriptRow {
+            background-color: #181B24;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 6px;
+        }
+        QFrame.transcriptRow:hover {
+            background-color: #222634;
+            border-color: rgba(255, 255, 255, 0.14);
+        }
+        QFrame.transcriptRowActive {
+            background-color: rgba(99, 102, 241, 0.18);
+            border: 1px solid #6366F1;
+            border-radius: 6px;
+        }
+        QLabel.transcriptText {
+            color: #D1D5DB;
+            font-size: 11px;
+        }
+        QLabel.transcriptTextActive {
+            color: #FFFFFF;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        QMenu {
+            background-color: #16181E;
+            color: #F3F4F6;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 8px;
+            padding: 4px;
+        }
+        QMenu::item {
+            padding: 5px 16px;
+            border-radius: 4px;
+            font-size: 11px;
+            color: #F3F4F6;
+        }
+        QMenu::item:selected {
+            background-color: #6366F1;
+            color: #FFFFFF;
+        }
+    """
+
+
+def get_queue_stylesheet(theme: str = 'dark') -> str:
+    """Return dark or light stylesheet for QueueManagerWindow based on active theme."""
+    if theme == 'light':
+        return """
+            #queueCard {
+                background-color: #FFFFFF;
+                border: 1px solid rgba(0, 0, 0, 0.14);
+                border-radius: 12px;
+            }
+            #queueHeader {
+                background-color: #F8FAFC;
+                border-top-left-radius: 11px;
+                border-top-right-radius: 11px;
+                border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+            }
+            #queueHeaderTitle {
+                color: #1E293B;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            #queueCountBadge {
+                background-color: rgba(99, 102, 241, 0.15);
+                color: #4338CA;
+                font-size: 11px;
+                font-weight: 600;
+                padding: 1px 7px;
+                border-radius: 9px;
+            }
+            QPushButton.queueMiniBtn {
+                background-color: #F1F5F9;
+                border: 1px solid rgba(0, 0, 0, 0.08);
+                border-radius: 5px;
+                min-width: 24px;
+                max-width: 24px;
+                min-height: 24px;
+                max-height: 24px;
+                padding: 0px;
+            }
+            QPushButton.queueMiniBtn:hover {
+                background-color: #E2E8F0;
+                border-color: rgba(0, 0, 0, 0.15);
+            }
+            QPushButton.queueMiniBtn:checked, QPushButton.queueMiniBtnAccent {
+                background-color: #6366F1;
+                border-color: #4F46E5;
+            }
+            QPushButton.queueMiniBtnAccent:hover {
+                background-color: #4F46E5;
+            }
+            #queueScroll, #queueListContainer {
+                background: transparent;
+                border: none;
+            }
+            QFrame.queueItem {
+                background-color: #F8FAFC;
+                border: 1px solid rgba(0, 0, 0, 0.08);
+                border-radius: 8px;
+            }
+            QFrame.queueItem:hover {
+                background-color: #F1F5F9;
+                border-color: rgba(0, 0, 0, 0.16);
+            }
+            QFrame.queueItemPlaying {
+                background-color: rgba(99, 102, 241, 0.10);
+                border: 1.5px solid #6366F1;
+                border-radius: 8px;
+            }
+            QLabel.queueBadge {
+                background-color: #E2E8F0;
+                color: #475569;
+                font-size: 11px;
+                font-weight: 600;
+                border-radius: 12px;
+                min-width: 24px;
+                max-width: 24px;
+                min-height: 24px;
+                max-height: 24px;
+            }
+            QLabel.queueBadgePlaying {
+                background-color: #6366F1;
+                color: #FFFFFF;
+                border-radius: 12px;
+                min-width: 24px;
+                max-width: 24px;
+                min-height: 24px;
+                max-height: 24px;
+            }
+            QLabel.queueItemTitle {
+                color: #1E293B;
+                font-size: 12px;
+            }
+            QLabel.queueItemTitlePlaying {
+                color: #4338CA;
+                font-size: 12px;
+                font-weight: 600;
+            }
+        """
+
+    # Default Dark
+    return """
+        #queueCard {
+            background-color: #16181E;
+            border: 1px solid rgba(255, 255, 255, 0.10);
+            border-radius: 12px;
+        }
+        #queueHeader {
+            background-color: #1E212B;
+            border-top-left-radius: 11px;
+            border-top-right-radius: 11px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+        }
+        #queueHeaderTitle {
+            color: #F3F4F6;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        #queueCountBadge {
+            background-color: rgba(99, 102, 241, 0.20);
+            color: #A5B4FC;
+            font-size: 11px;
+            font-weight: 600;
+            padding: 1px 7px;
+            border-radius: 9px;
+        }
+        QPushButton.queueMiniBtn {
+            background-color: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 5px;
+            min-width: 24px;
+            max-width: 24px;
+            min-height: 24px;
+            max-height: 24px;
+            padding: 0px;
+        }
+        QPushButton.queueMiniBtn:hover {
+            background-color: rgba(255, 255, 255, 0.12);
+            border-color: rgba(255, 255, 255, 0.18);
+        }
+        QPushButton.queueMiniBtn:checked, QPushButton.queueMiniBtnAccent {
+            background-color: #6366F1;
+            border-color: #818CF8;
+        }
+        QPushButton.queueMiniBtnAccent:hover {
+            background-color: #818CF8;
+        }
+        #queueScroll, #queueListContainer {
+            background: transparent;
+            border: none;
+        }
+        QFrame.queueItem {
+            background-color: #1C1F28;
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            border-radius: 8px;
+        }
+        QFrame.queueItem:hover {
+            background-color: #232733;
+            border-color: rgba(255, 255, 255, 0.14);
+        }
+        QFrame.queueItemPlaying {
+            background-color: rgba(99, 102, 241, 0.14);
+            border: 1.5px solid #6366F1;
+            border-radius: 8px;
+        }
+        QLabel.queueBadge {
+            background-color: #252936;
+            color: #9CA3AF;
+            font-size: 11px;
+            font-weight: 600;
+            border-radius: 12px;
+            min-width: 24px;
+            max-width: 24px;
+            min-height: 24px;
+            max-height: 24px;
+        }
+        QLabel.queueBadgePlaying {
+            background-color: #6366F1;
+            color: #FFFFFF;
+            border-radius: 12px;
+            min-width: 24px;
+            max-width: 24px;
+            min-height: 24px;
+            max-height: 24px;
+        }
+        QLabel.queueItemTitle {
+            color: #E5E7EB;
+            font-size: 12px;
+        }
+        QLabel.queueItemTitlePlaying {
+            color: #A5B4FC;
+            font-size: 12px;
+            font-weight: 600;
+        }
+    """
 
 
 # ── Direct mpv IPC & Multi-Segment Timeline Controller ────────────────────────
@@ -703,6 +1415,7 @@ class QueueManagerWindow(QWidget):
         self.current_index: int = -1
         self.is_playing_from_queue: bool = False
         self._last_mtime: float = 0.0
+        self._current_theme: str = ''
 
         self._build_ui()
         self._restore_position()
@@ -778,107 +1491,34 @@ class QueueManagerWindow(QWidget):
         card_layout.addWidget(self.scroll, 1)
         outer.addWidget(self.card)
 
-        self.setStyleSheet("""
-            #queueCard {
-                background-color: #16181E;
-                border: 1px solid rgba(255, 255, 255, 0.10);
-                border-radius: 12px;
-            }
-            #queueHeader {
-                background-color: #1E212B;
-                border-top-left-radius: 11px;
-                border-top-right-radius: 11px;
-                border-bottom: 1px solid rgba(255, 255, 255, 0.07);
-            }
-            #queueHeaderTitle {
-                color: #F3F4F6;
-                font-size: 12px;
-                font-weight: 600;
-            }
-            #queueCountBadge {
-                background-color: rgba(99, 102, 241, 0.20);
-                color: #A5B4FC;
-                font-size: 11px;
-                font-weight: 600;
-                padding: 1px 7px;
-                border-radius: 9px;
-            }
-            QPushButton.queueMiniBtn {
-                background-color: rgba(255, 255, 255, 0.04);
-                border: 1px solid rgba(255, 255, 255, 0.08);
-                border-radius: 5px;
-                min-width: 24px;
-                max-width: 24px;
-                min-height: 24px;
-                max-height: 24px;
-                padding: 0px;
-            }
-            QPushButton.queueMiniBtn:hover {
-                background-color: rgba(255, 255, 255, 0.12);
-                border-color: rgba(255, 255, 255, 0.18);
-            }
-            QPushButton.queueMiniBtn:checked, QPushButton.queueMiniBtnAccent {
-                background-color: #6366F1;
-                border-color: #818CF8;
-            }
-            QPushButton.queueMiniBtnAccent:hover {
-                background-color: #818CF8;
-            }
-            #queueScroll, #queueListContainer {
-                background: transparent;
-                border: none;
-            }
-            QFrame.queueItem {
-                background-color: #1C1F28;
-                border: 1px solid rgba(255, 255, 255, 0.06);
-                border-radius: 8px;
-            }
-            QFrame.queueItem:hover {
-                background-color: #232733;
-                border-color: rgba(255, 255, 255, 0.14);
-            }
-            QFrame.queueItemPlaying {
-                background-color: rgba(99, 102, 241, 0.14);
-                border: 1.5px solid #6366F1;
-                border-radius: 8px;
-            }
-            QLabel.queueBadge {
-                background-color: #252936;
-                color: #9CA3AF;
-                font-size: 11px;
-                font-weight: 600;
-                border-radius: 12px;
-                min-width: 24px;
-                max-width: 24px;
-                min-height: 24px;
-                max-height: 24px;
-            }
-            QLabel.queueBadgePlaying {
-                background-color: #6366F1;
-                color: #FFFFFF;
-                border-radius: 12px;
-                min-width: 24px;
-                max-width: 24px;
-                min-height: 24px;
-                max-height: 24px;
-            }
-            QLabel.queueItemTitle {
-                color: #E5E7EB;
-                font-size: 12px;
-            }
-            QLabel.queueItemTitlePlaying {
-                color: #A5B4FC;
-                font-size: 12px;
-                font-weight: 600;
-            }
-        """)
-
+        self.apply_theme()
         self.load_from_disk(force=True)
+
+    def apply_theme(self, theme: Optional[str] = None):
+        target = theme or get_effective_theme(QApplication.instance())
+        self._current_theme = target
+        self.setStyleSheet(get_queue_stylesheet(target))
+        for btn in (
+            getattr(self, 'btn_add', None),
+            getattr(self, 'btn_play_all', None),
+            getattr(self, 'btn_loop', None),
+            getattr(self, 'btn_clear', None),
+            getattr(self, 'btn_close', None),
+        ):
+            if btn is not None:
+                iname = btn.property('iconName')
+                is_acc = btn.property('isAccent')
+                if iname:
+                    color = '#FFFFFF' if is_acc else ('#475569' if target == 'light' else '#D1D5DB')
+                    btn.setIcon(lucide_icon(iname, color, 13))
 
     def _make_mini_btn(self, icon_name: str, tooltip: str, accent: bool = False) -> QPushButton:
         btn = QPushButton()
         btn.setProperty('class', 'queueMiniBtn queueMiniBtnAccent' if accent else 'queueMiniBtn')
-        btn.setIcon(lucide_icon(icon_name, '#FFFFFF' if accent else '#D1D5DB', 13))
+        btn.setProperty('iconName', icon_name)
+        btn.setProperty('isAccent', accent)
+        icon_color = '#FFFFFF' if accent else ('#475569' if self._current_theme == 'light' else '#D1D5DB')
+        btn.setIcon(lucide_icon(icon_name, icon_color, 13))
         btn.setIconSize(QSize(13, 13))
         btn.setToolTip(tooltip)
         btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
@@ -1089,6 +1729,7 @@ class FloatingPlayerWindow(QWidget):
         self._transcript_active_idx: int = -1
         self._transcript_rows: List[QFrame] = []
         self._segment_words: Dict[int, List[Dict[str, Any]]] = {}
+        self._current_theme: str = ''
 
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
@@ -1346,250 +1987,45 @@ class FloatingPlayerWindow(QWidget):
         deck_layout.addWidget(self.transcript_box)
 
         outer.addWidget(self.deck)
+        self.apply_theme()
 
-        # ── Studio Obsidian Slate Stylesheet ─────────────────────────────────
-        self.setStyleSheet("""
-            #playerDeck {
-                background-color: #16181E;
-                border: 1px solid rgba(255, 255, 255, 0.10);
-                border-radius: 14px;
-            }
-            #statusDot {
-                color: #10B981;
-                font-size: 11px;
-                padding-right: 2px;
-            }
-            #playerTitle {
-                color: #F3F4F6;
-                font-size: 12px;
-                font-weight: 600;
-            }
-            #speedPill {
-                background-color: #1E212B;
-                color: #A5B4FC;
-                border: 1px solid rgba(99, 102, 241, 0.35);
-                border-radius: 6px;
-                font-size: 11px;
-                font-weight: 600;
-                padding: 2px 7px;
-                min-height: 22px;
-                max-height: 22px;
-            }
-            #speedPill:hover {
-                background-color: rgba(99, 102, 241, 0.22);
-                border-color: #818CF8;
-                color: #FFFFFF;
-            }
-            QPushButton.utilBtn {
-                background-color: transparent;
-                border: 1px solid transparent;
-                border-radius: 6px;
-                min-width: 24px;
-                max-width: 24px;
-                min-height: 24px;
-                max-height: 24px;
-                padding: 0px;
-            }
-            QPushButton.utilBtn:hover {
-                background-color: rgba(255, 255, 255, 0.09);
-                border-color: rgba(255, 255, 255, 0.12);
-            }
-            QPushButton.utilBtn:checked {
-                background-color: rgba(99, 102, 241, 0.25);
-                border-color: #6366F1;
-            }
-            #queueBanner {
-                background-color: rgba(99, 102, 241, 0.12);
-                color: #A5B4FC;
-                border-radius: 5px;
-                padding: 2px 6px;
-                font-size: 11px;
-                font-weight: 500;
-            }
-            #timeLabel {
-                color: #9CA3AF;
-                font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace;
-                font-size: 11px;
-                font-weight: 500;
-                min-width: 34px;
-            }
-            #seekSlider::groove:horizontal {
-                height: 6px;
-                background: #0E1015;
-                border: 1px solid rgba(255, 255, 255, 0.06);
-                border-radius: 3px;
-            }
-            #seekSlider::sub-page:horizontal {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #6366F1, stop:1 #818CF8);
-                border-radius: 3px;
-            }
-            #seekSlider::handle:horizontal {
-                background: #F9FAFB;
-                border: 2px solid #6366F1;
-                width: 12px;
-                height: 12px;
-                margin: -4px 0;
-                border-radius: 7px;
-            }
-            #seekSlider::handle:horizontal:hover {
-                background: #FFFFFF;
-                border-color: #818CF8;
-            }
-            #stateHint {
-                color: #6B7280;
-                font-size: 11px;
-                font-weight: 500;
-                min-width: 68px;
-            }
-            #transportSecondaryBtn {
-                background-color: #1E212B;
-                border: 1px solid rgba(255, 255, 255, 0.08);
-                border-radius: 8px;
-                min-width: 34px;
-                max-width: 34px;
-                min-height: 32px;
-                max-height: 32px;
-            }
-            #transportSecondaryBtn:hover {
-                background-color: #282C3A;
-                border-color: rgba(255, 255, 255, 0.18);
-            }
-            #transportSecondaryBtn:disabled {
-                opacity: 0.4;
-            }
-            #transportHeroBtn {
-                background-color: #6366F1;
-                border: 1px solid #818CF8;
-                border-radius: 10px;
-                min-width: 44px;
-                max-width: 44px;
-                min-height: 36px;
-                max-height: 36px;
-            }
-            #transportHeroBtn:hover {
-                background-color: #818CF8;
-            }
-            #transportStopBtn {
-                background-color: rgba(244, 63, 94, 0.12);
-                border: 1px solid rgba(244, 63, 94, 0.28);
-                border-radius: 8px;
-                min-width: 32px;
-                max-width: 32px;
-                min-height: 32px;
-                max-height: 32px;
-            }
-            #transportStopBtn:hover {
-                background-color: rgba(244, 63, 94, 0.24);
-                border-color: #F43F5E;
-            }
-            #chunkBox {
-                background-color: #111318;
-                border: 1px solid rgba(255, 255, 255, 0.06);
-                border-radius: 8px;
-            }
-            #chunkPhaseText {
-                color: #9CA3AF;
-                font-size: 11px;
-                font-weight: 500;
-            }
-            #chunkPctText {
-                color: #818CF8;
-                font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace;
-                font-size: 11px;
-                font-weight: 600;
-            }
-            #chunkBarBg {
-                background-color: #1E212B;
-                border-radius: 2px;
-            }
-            #chunkBarFill {
-                background-color: #6366F1;
-                border-radius: 2px;
-            }
-            QLabel.chunkPillPending {
-                background-color: #1C1F28;
-                color: #6B7280;
-                border: 1px solid rgba(255, 255, 255, 0.06);
-                border-radius: 4px;
-                font-size: 10px;
-                font-weight: 600;
-                padding: 1px 5px;
-            }
-            QLabel.chunkPillProcessing {
-                background-color: rgba(99, 102, 241, 0.22);
-                color: #A5B4FC;
-                border: 1px solid #6366F1;
-                border-radius: 4px;
-                font-size: 10px;
-                font-weight: 600;
-                padding: 1px 5px;
-            }
-            QLabel.chunkPillCompleted {
-                background-color: rgba(16, 185, 129, 0.16);
-                color: #34D399;
-                border: 1px solid rgba(16, 185, 129, 0.40);
-                border-radius: 4px;
-                font-size: 10px;
-                font-weight: 600;
-                padding: 1px 5px;
-            }
-            QLabel.chunkPillFailed {
-                background-color: rgba(244, 63, 94, 0.18);
-                color: #FB7185;
-                border: 1px solid rgba(244, 63, 94, 0.45);
-                border-radius: 4px;
-                font-size: 10px;
-                font-weight: 600;
-                padding: 1px 5px;
-            }
-            #transcriptBox {
-                background-color: #111318;
-                border: 1px solid rgba(255, 255, 255, 0.07);
-                border-radius: 8px;
-            }
-            #transcriptHeader {
-                color: #A5B4FC;
-                font-size: 10px;
-                font-weight: 600;
-            }
-            #hotkeyHint {
-                color: #6B7280;
-                font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace;
-                font-size: 9px;
-            }
-            #transcriptScroll, #transcriptListWidget {
-                background: transparent;
-                border: none;
-            }
-            QFrame.transcriptRow {
-                background-color: #181B24;
-                border: 1px solid rgba(255, 255, 255, 0.05);
-                border-radius: 6px;
-            }
-            QFrame.transcriptRow:hover {
-                background-color: #222634;
-                border-color: rgba(255, 255, 255, 0.14);
-            }
-            QFrame.transcriptRowActive {
-                background-color: rgba(99, 102, 241, 0.18);
-                border: 1px solid #6366F1;
-                border-radius: 6px;
-            }
-            QLabel.transcriptText {
-                color: #D1D5DB;
-                font-size: 11px;
-            }
-            QLabel.transcriptTextActive {
-                color: #FFFFFF;
-                font-size: 11px;
-                font-weight: 600;
-            }
-        """)
+    def apply_theme(self, theme: Optional[str] = None):
+        target = theme or get_effective_theme(QApplication.instance())
+        self._current_theme = target
+        self.setStyleSheet(get_player_hud_stylesheet(target))
+
+        icon_color = '#475569' if target == 'light' else '#9CA3AF'
+        sec_color = '#334155' if target == 'light' else '#E5E7EB'
+        stop_color = '#E11D48' if target == 'light' else '#FCA5A5'
+
+        for btn in (
+            getattr(self, 'btn_enqueue', None),
+            getattr(self, 'btn_transcript', None),
+            getattr(self, 'btn_queue', None),
+            getattr(self, 'btn_ocr', None),
+            getattr(self, 'btn_save', None),
+            getattr(self, 'btn_bookmark', None),
+            getattr(self, 'btn_settings', None),
+            getattr(self, 'btn_close', None),
+        ):
+            if btn is not None:
+                iname = btn.property('iconName')
+                if iname:
+                    btn.setIcon(lucide_icon(iname, icon_color, 14))
+
+        if hasattr(self, 'btn_back'):
+            self.btn_back.setIcon(lucide_icon('rotate-ccw', sec_color, 17))
+        if hasattr(self, 'btn_fwd'):
+            self.btn_fwd.setIcon(lucide_icon('rotate-cw', sec_color, 17))
+        if hasattr(self, 'btn_stop'):
+            self.btn_stop.setIcon(lucide_icon('square', stop_color, 15))
 
     def _make_util_btn(self, icon_name: str, tooltip: str) -> QPushButton:
         btn = QPushButton()
         btn.setProperty('class', 'utilBtn')
-        btn.setIcon(lucide_icon(icon_name, '#9CA3AF', 14))
+        btn.setProperty('iconName', icon_name)
+        color = '#475569' if getattr(self, '_current_theme', '') == 'light' else '#9CA3AF'
+        btn.setIcon(lucide_icon(icon_name, color, 14))
         btn.setIconSize(QSize(14, 14))
         btn.setToolTip(tooltip)
         btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
@@ -1608,6 +2044,13 @@ class FloatingPlayerWindow(QWidget):
             self.move(int(avail.right()) - self.width() - 28, int(avail.bottom()) - 185)
 
     def update_from_state(self, daemon_state: str):
+        # Poll and adapt to OS or user theme changes (system default / dark / light)
+        target_theme = get_effective_theme(QApplication.instance())
+        if target_theme != getattr(self, '_current_theme', 'dark'):
+            self.apply_theme(target_theme)
+            if hasattr(self, 'queue_window'):
+                self.queue_window.apply_theme(target_theme)
+
         # Poll queue file changes
         self.queue_window.load_from_disk()
         self.btn_queue.setChecked(self.queue_window.isVisible())

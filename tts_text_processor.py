@@ -84,6 +84,77 @@ def read_bool_config(filename: str, default: bool = True) -> bool:
         return default
 
 
+def read_str_config(filename: str, default: str = '') -> str:
+    """Read a single-line string value from a config file in CONFIG_DIR."""
+    try:
+        with open(os.path.join(CONFIG_DIR, filename), 'r', encoding='utf-8') as f:
+            val = f.readline().strip()
+        return val if val else default
+    except Exception:
+        return default
+
+
+_THEME_CACHE: Dict[str, Any] = {'time': 0.0, 'val': 'dark'}
+
+
+def get_effective_theme(app: Any = None, max_age_sec: float = 3.0) -> str:
+    """Determine effective UI theme ('dark' or 'light') matching system default or user override."""
+    pref = read_str_config('ui_theme', 'auto').strip().lower()
+    if pref in ('dark', 'light'):
+        return pref
+
+    now = time.time()
+    if max_age_sec > 0 and (now - _THEME_CACHE['time']) < max_age_sec:
+        return _THEME_CACHE['val']
+
+    resolved = 'dark'
+
+    # 1. Check GNOME / FreeDesktop interface color-scheme
+    try:
+        res = subprocess.run(
+            ['gsettings', 'get', 'org.gnome.desktop.interface', 'color-scheme'],
+            capture_output=True, text=True, timeout=0.15
+        )
+        out = res.stdout.strip().lower()
+        if 'prefer-dark' in out:
+            resolved = 'dark'
+        elif 'prefer-light' in out:
+            resolved = 'light'
+        else:
+            raise ValueError('color-scheme is default/unset')
+    except Exception:
+        # 2. Check Cinnamon / GNOME gtk-theme name
+        theme_found = False
+        for schema in ('org.cinnamon.desktop.interface', 'org.gnome.desktop.interface'):
+            try:
+                res = subprocess.run(
+                    ['gsettings', 'get', schema, 'gtk-theme'],
+                    capture_output=True, text=True, timeout=0.15
+                )
+                theme_name = res.stdout.strip().lower()
+                if 'dark' in theme_name:
+                    resolved = 'dark'
+                    theme_found = True
+                    break
+                elif 'light' in theme_name or 'adwaita' in theme_name or 'mint-y' in theme_name:
+                    resolved = 'light'
+                    theme_found = True
+                    break
+            except Exception:
+                pass
+
+        # 3. Check Qt application palette background lightness
+        if not theme_found and app is not None:
+            try:
+                resolved = 'dark' if app.palette().window().color().lightness() < 128 else 'light'
+            except Exception:
+                resolved = 'dark'
+
+    _THEME_CACHE['time'] = now
+    _THEME_CACHE['val'] = resolved
+    return resolved
+
+
 def load_queue() -> List[Dict[str, Any]]:
     """Load playback queue items from $RUNTIME_DIR/queue.json."""
     path = get_queue_path()
@@ -370,6 +441,7 @@ class TTSSettingsStore:
         'piper_model_ar': '',
         'duck_background_audio': 'no',
         'duck_volume_percent': '40',
+        'ui_theme': 'auto',
     }
 
     def __init__(self, config_dir: Optional[str] = None):
@@ -394,6 +466,10 @@ class TTSSettingsStore:
         trans_from = _sanitize_str(src.get('translate_from'), 10, 'auto').lower()
         if trans_from not in VALID_LANGS:
             trans_from = 'auto'
+
+        ui_theme = _sanitize_str(src.get('ui_theme'), 16, 'auto').lower()
+        if ui_theme not in ('auto', 'dark', 'light'):
+            ui_theme = 'auto'
 
         validated: Dict[str, str] = {
             'voice_en': _sanitize_str(src.get('voice_en'), 80, cls.DEFAULTS['voice_en']),
@@ -423,6 +499,7 @@ class TTSSettingsStore:
             'piper_model_ar': _sanitize_str(src.get('piper_model_ar'), 512, ''),
             'duck_background_audio': _norm_yes_no(src.get('duck_background_audio'), False),
             'duck_volume_percent': str(_parse_int_clamped(src.get('duck_volume_percent'), 5, 90, 40)),
+            'ui_theme': ui_theme,
         }
         return validated
 

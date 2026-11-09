@@ -402,3 +402,57 @@ def test_bookmark_saving_and_hotkey(tmp_path, monkeypatch):
     assert '0:15 / 1:00' in content
 
 
+def test_system_theme_detection_and_popup_styling(tmp_path, monkeypatch):
+    from PyQt6.QtWidgets import QApplication
+    _app = QApplication.instance() or QApplication([])
+    from tts_text_processor import get_effective_theme, TTSSettingsStore
+    from tts_hud import (
+        FloatingPlayerWindow,
+        MPVTimelineController,
+        QueueManagerWindow,
+        get_player_hud_stylesheet,
+        get_queue_stylesheet,
+    )
+
+    # 1. Test explicit configuration overrides
+    cfg_dir = str(tmp_path / 'cfg')
+    os.makedirs(cfg_dir, exist_ok=True)
+    monkeypatch.setattr('tts_text_processor.CONFIG_DIR', cfg_dir)
+
+    with open(os.path.join(cfg_dir, 'ui_theme'), 'w') as f:
+        f.write('light\n')
+    assert get_effective_theme(max_age_sec=0) == 'light'
+
+    with open(os.path.join(cfg_dir, 'ui_theme'), 'w') as f:
+        f.write('dark\n')
+    assert get_effective_theme(max_age_sec=0) == 'dark'
+
+    # 2. Test auto detection default
+    with open(os.path.join(cfg_dir, 'ui_theme'), 'w') as f:
+        f.write('auto\n')
+    eff = get_effective_theme(app=_app, max_age_sec=0)
+    assert eff in ('dark', 'light')
+
+    # 3. Test FloatingPlayerWindow and QueueManagerWindow theme switching
+    ctrl = MPVTimelineController()
+    qwin = QueueManagerWindow()
+    hud = FloatingPlayerWindow(ctrl, qwin)
+
+    # Apply Light Theme
+    hud.apply_theme('light')
+    qwin.apply_theme('light')
+    assert hud._current_theme == 'light'
+    assert qwin._current_theme == 'light'
+    assert '#FFFFFF' in hud.styleSheet()
+    assert '#FFFFFF' in qwin.styleSheet()
+
+    # Apply Dark Theme
+    hud.apply_theme('dark')
+    qwin.apply_theme('dark')
+    assert hud._current_theme == 'dark'
+    assert qwin._current_theme == 'dark'
+    assert '#16181E' in hud.styleSheet()
+    assert '#16181E' in qwin.styleSheet()
+
+
+
