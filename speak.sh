@@ -680,6 +680,17 @@ generate_audio() {
 [ -n "$OVERRIDE_TEXT" ] && echo "STATUS:GENERATING"
 echo "GENERATING" > "$TTS_STATUS_FILE"
 
+BATTERY_SAVER=$(read_cfg_first "battery_saver" "battery" "yes")
+IS_ON_BATTERY=0
+if [ "$BATTERY_SAVER" = "yes" ]; then
+    for b in /sys/class/power_supply/BAT*/status; do
+        if [ -f "$b" ] && grep -qi "Discharging" "$b" 2>/dev/null; then
+            IS_ON_BATTERY=1
+            break
+        fi
+    done
+fi
+
 PIDS=""
 for i in $(seq 0 $((SEG_COUNT - 1))); do
     PAD=$(printf "%03d" "$i")
@@ -703,9 +714,13 @@ for i in $(seq 0 $((SEG_COUNT - 1))); do
     fi
 
     (
-        # Chunk 0 starts immediately (0s delay); subsequent chunks stagger gently (0.12s)
+        # Chunk 0 starts immediately (0s delay); subsequent chunks stagger gently
         if [ "$i" -gt 0 ]; then
-            sleep "$(awk -v n="$i" 'BEGIN{printf "%.2f", (n <= 6 ? n : 6) * 0.12}')"
+            if [ "$IS_ON_BATTERY" -eq 1 ]; then
+                sleep "$(awk -v n="$i" 'BEGIN{printf "%.2f", (n <= 4 ? n : 4) * 0.35}')"
+            else
+                sleep "$(awk -v n="$i" 'BEGIN{printf "%.2f", (n <= 6 ? n : 6) * 0.12}')"
+            fi
         fi
         echo "processing" > "$STATUS_PATH"
         CACHED=$(cache_path "$VOICE" "$CACHE_RATE_TAG" "$SEG_TEXT")
@@ -817,8 +832,36 @@ if [ "$TTS_MODE" = "play" ]; then
     if [ "$VOICE_CLARITY_EQ" = "yes" ]; then
         MPV_AUDIO_FILTERS=(--af="highpass=f=100,equalizer=f=3000:width_type=h:width=1000:g=3.5,acompressor")
     fi
-    mpv "$FIRST_FILE" --no-terminal --idle --gapless-audio=yes --audio-buffer=0.2 --speed="$INITIAL_SPEED" "${MPV_AUDIO_FILTERS[@]}" --input-ipc-server="$MPV_SOCKET" 200>&- &
+    mpv "$FIRST_FILE" --no-terminal --idle --gapless-audio=yes --audio-stream-silence=yes --audio-buffer=0.25 --speed="$INITIAL_SPEED" "${MPV_AUDIO_FILTERS[@]}" --input-ipc-server="$MPV_SOCKET" 200>&- &
     MPV_PID=$!
+
+    # Record history entry in background
+    (
+        python3 -c "
+import sys, os
+sys.path.insert(0, '$SCRIPT_DIR')
+from tts_text_processor import record_spoken_history
+txt_path = '$WORK_DIR/seg_000.txt'
+txt = open(txt_path, 'r', encoding='utf-8').read() if os.path.exists(txt_path) else ''
+record_spoken_history('$WINDOW_TITLE', txt, '$CURRENT_LANG', 0.0)
+" 2>/dev/null || true
+    ) 200>&- &
+
+    # Interactive desktop notification with transport actions
+    if command -v notify-send >/dev/null 2>&1; then
+        (
+            if notify-send --help 2>&1 | grep -q -- '--action'; then
+                ACT=$(notify-send -t 6000 -a "Speak a Loud" -i "audio-volume-high" \
+                    --action="pause=Pause" --action="stop=Stop" \
+                    "Speak a Loud" "${WINDOW_TITLE:-Reading selection aloud}" 2>/dev/null || true)
+                if [ "$ACT" = "pause" ]; then
+                    bash "$SCRIPT_DIR/speak-pause.sh" 2>/dev/null || true
+                elif [ "$ACT" = "stop" ]; then
+                    bash "$SCRIPT_DIR/speak-stop.sh" 2>/dev/null || true
+                fi
+            fi
+        ) 200>&- &
+    fi
 
     # ── Background: append remaining segments in order via IPC ──────────────
     (

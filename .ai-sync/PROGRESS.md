@@ -65,3 +65,18 @@
 - [x] 5. Add dynamic live-sync reloading button visibility on `settings.json` modification without daemon restarts (`tts_hud.py`)
 - [x] 6. Guard keyboard hotkeys in `FloatingPlayerWindow` against disabled buttons (`tts_hud.py`)
 - [x] 7. Automated tests covering presets, schema validation, and button hide/show rules (50/50 passed)
+
+## Phase 10: Advanced Reordering, Opacity, Hotkey Remapper & System Integrations
+- [x] 1. Reorderable Button Layout in Settings & Drawer (`list_drawer_order`, `hud_drawer_order`, `tts-settings.py`, `tts_hud.py`)
+- [x] 2. Popup Opacity & Transparency Slider (`hud_opacity`, hover boost to 100%, `tts-settings.py`, `tts_hud.py`)
+- [x] 3. Custom Button Hotkey Remapper (`hk_inputs`, `custom_hotkeys`, `tts-settings.py`, `tts_hud.py`)
+- [x] 4. Profile Switcher Shortcut (<kbd>Shift+P</kbd>, `cycle_hud_profile`, minimal/reader/productivity/default, `tts_hud.py`)
+- [x] 5. Audio Output Device Selector in Popup (`btn_audio_device`, PipeWire `wpctl` & PulseAudio `pactl`, `tts_hud.py`, `tts-settings.py`)
+- [x] 6. Gapless Segment Audio Crossfading (`--gapless-audio=yes --audio-stream-silence=yes`, `speak.sh`)
+- [x] 7. Battery / AC Power Awareness (`battery_saver`, `/sys/class/power_supply/BAT*/status`, `speak.sh`)
+- [x] 8. Desktop Notification Transport Action Buttons (`notify-send --action="pause=Pause" --action="stop=Stop"`, `speak.sh`)
+- [x] 9. Automatic Text Punctuation Restorer for Raw OCR Transcripts (`restore_punctuation_for_ocr`, `tts_text_processor.py`, `tts_ocr.py`)
+- [x] 10. Spoken History & Reading Session Exporter (`record_spoken_history`, `export_history_as_markdown`, `export_history_as_csv`, `tts_text_processor.py`, `tts-settings.py`)
+- [x] 11. D-Bus / Socket Daemon IPC Rate Limiting & Input Sanitization (`MAX_MESSAGE_BYTES=1MB`, sliding-window rate limit, `tts_synth_worker.py`)
+- [x] 12. Wayland Native Screen Selection Fallback (`slurp` + `grim` fallback in `tts_ocr.py`)
+- [x] 13. Full automated verification test suite expanded to 56 tests (56/56 passed)

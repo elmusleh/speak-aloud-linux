@@ -1168,7 +1168,8 @@ def test_floating_player_button_visibility_apply(tmp_path, monkeypatch):
 
     ctrl = MPVTimelineController()
     qwin = QueueManagerWindow()
-    player = FloatingPlayerWindow(ctrl, qwin)
+    cfg_isolated = str(tmp_path / 'hud_cfg')
+    player = FloatingPlayerWindow(ctrl, qwin, config_dir=cfg_isolated)
     player.show()
 
     # 1. Custom button hide test: disable speed pill, stop button, OCR, and Anki
@@ -1206,6 +1207,7 @@ def test_floating_player_button_visibility_apply(tmp_path, monkeypatch):
         'hud_btn_anki': 'no',
         'hud_btn_sleep': 'no',
         'hud_btn_settings': 'no',
+        'hud_btn_audio_device': 'no',
     })
     assert player.btn_more.isVisible() is False
     assert player.tools_box.isVisible() is False
@@ -1219,6 +1221,161 @@ def test_floating_player_button_visibility_apply(tmp_path, monkeypatch):
     assert player.btn_more.isVisible() is True
     assert player.tools_box.isVisible() is True
     player.hide()
+
+
+def test_restore_punctuation_for_ocr():
+    from tts_text_processor import restore_punctuation_for_ocr
+    raw = "this is an unpunctuated sentence with no dot\nand another line here"
+    res = restore_punctuation_for_ocr(raw)
+    assert res.endswith('.')
+    assert "This is" in res
+    assert "And another line" in res
+
+    # Punctuation detached by whitespace
+    detached = "Hello world , this is nice . Really ! No ?"
+    res2 = restore_punctuation_for_ocr(detached)
+    assert "world, this is nice." in res2
+    assert "Really!" in res2
+    assert "No?" in res2
+
+
+def test_spoken_history_recording_and_export(tmp_path):
+    from tts_text_processor import (
+        record_spoken_history, load_spoken_history,
+        export_history_as_markdown, export_history_as_csv
+    )
+    cfg_dir = str(tmp_path / 'cfg')
+    entry1 = record_spoken_history("Passage 1", text="First test sentence.", voice="en-US-ChristopherNeural", duration=2.5, lang="en", config_dir=cfg_dir)
+    assert entry1.get('text') == "First test sentence."
+    assert entry1.get('words') == 3
+
+    entry2 = record_spoken_history("Passage 2", text="Second sentence in German.", voice="de-DE-ConradNeural", duration=3.0, lang="de", config_dir=cfg_dir)
+    assert entry2.get('lang') == "de"
+
+    history = load_spoken_history(config_dir=cfg_dir)
+    assert len(history) == 2
+    assert history[0]['text'] == "First test sentence."
+    assert history[1]['text'] == "Second sentence in German."
+
+    md_out = str(tmp_path / "history.md")
+    assert export_history_as_markdown(md_out, config_dir=cfg_dir) is True
+    with open(md_out, 'r', encoding='utf-8') as f:
+        md_content = f.read()
+    assert "# Speak a Loud — Spoken Reading History" in md_content
+    assert "First test sentence." in md_content
+    assert "Second sentence in German." in md_content
+
+    csv_out = str(tmp_path / "history.csv")
+    assert export_history_as_csv(csv_out, config_dir=cfg_dir) is True
+    with open(csv_out, 'r', encoding='utf-8') as f:
+        csv_content = f.read()
+    assert "Timestamp,Language,Voice,DurationSec,WordCount,Chars,Text" in csv_content
+    assert "First test sentence." in csv_content
+
+
+def test_synth_server_rate_limit_and_payload_cap(tmp_path):
+    import asyncio
+    async def _run():
+        from tts_synth_worker import AsyncSynthServer
+        sock_path = str(tmp_path / "synth_test.sock")
+        server = AsyncSynthServer(sock_path)
+        server.MAX_MESSAGE_BYTES = 500  # lowered for isolated unit testing
+        srv = await asyncio.start_unix_server(server._handle_client, path=sock_path, limit=server.MAX_MESSAGE_BYTES + 4096)
+        reader, writer = await asyncio.open_unix_connection(sock_path)
+        oversized = "A" * 600
+        req = json.dumps({'action': 'synthesize', 'text': oversized}) + "\n"
+        writer.write(req.encode('utf-8'))
+        await writer.drain()
+        resp_line = await reader.readline()
+        resp = json.loads(resp_line.decode('utf-8'))
+        assert resp.get('ok') is False
+        assert resp.get('error') == 'payload_too_large'
+        writer.close()
+        await writer.wait_closed()
+        srv.close()
+        await srv.wait_closed()
+    asyncio.run(_run())
+
+
+def test_hud_opacity_and_profile_cycle(tmp_path, monkeypatch):
+    from PyQt6.QtWidgets import QApplication
+    from PyQt6.QtGui import QKeyEvent
+    from PyQt6.QtCore import Qt
+    _app = QApplication.instance() or QApplication([])
+    from tts_hud import FloatingPlayerWindow, MPVTimelineController, QueueManagerWindow
+
+    monkeypatch.setattr('tts_hud.MPV_SOCKET', str(tmp_path / 'nonexistent.sock'))
+    monkeypatch.setattr('tts_hud.WORK_DIR', str(tmp_path / 'work'))
+
+    ctrl = MPVTimelineController()
+    qwin = QueueManagerWindow()
+    cfg_isolated = str(tmp_path / 'hud_cfg')
+    player = FloatingPlayerWindow(ctrl, qwin, config_dir=cfg_isolated)
+    player.show()
+
+    # Opacity test
+    player.apply_button_settings({'hud_opacity': '0.80'})
+    assert abs(player.windowOpacity() - 0.80) < 0.05
+    assert player.hud_opacity == 0.80
+
+    # Profile cycle test: Shift+P
+    assert player._active_hud_profile == 'default'
+    key_event = QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_P, Qt.KeyboardModifier.ShiftModifier)
+    player.keyPressEvent(key_event)
+    assert player._active_hud_profile == 'minimal'
+    assert player.lbl_mode_tag.isVisible() is False
+
+    player.keyPressEvent(key_event)
+    assert player._active_hud_profile == 'reader'
+    assert player.btn_bookmark.isHidden() is False
+
+    player.hide()
+
+
+def test_drawer_order_and_audio_device_menu(tmp_path, monkeypatch):
+    from PyQt6.QtWidgets import QApplication
+    _app = QApplication.instance() or QApplication([])
+    from tts_hud import FloatingPlayerWindow, MPVTimelineController, QueueManagerWindow
+
+    monkeypatch.setattr('tts_hud.MPV_SOCKET', str(tmp_path / 'nonexistent.sock'))
+    monkeypatch.setattr('tts_hud.WORK_DIR', str(tmp_path / 'work'))
+
+    ctrl = MPVTimelineController()
+    qwin = QueueManagerWindow()
+    cfg_isolated = str(tmp_path / 'hud_cfg')
+    player = FloatingPlayerWindow(ctrl, qwin, config_dir=cfg_isolated)
+    player.show()
+
+    # Test drawer custom order
+    custom_order = 'audio_device,settings,ocr,bookmark'
+    player.apply_button_settings({'hud_drawer_order': custom_order})
+    assert player.btn_audio_device is not None
+
+    monkeypatch.setattr('shutil.which', lambda x: '/usr/bin/' + x if x in ('wpctl', 'pactl') else None)
+    monkeypatch.setattr('subprocess.run', lambda *args, **kwargs: type('Res', (), {'stdout': '100. Built-in Audio\n* 102. Headset Sink\n', 'returncode': 0})())
+    player._show_audio_devices_menu()
+    player.hide()
+
+
+def test_wayland_capture_fallback(tmp_path, monkeypatch):
+    import tts_ocr
+    monkeypatch.setattr(os, 'environ', {'WAYLAND_DISPLAY': 'wayland-0', 'PATH': '/usr/bin'})
+    monkeypatch.setattr('shutil.which', lambda x: '/usr/bin/' + x if x in ('slurp', 'grim') else None)
+
+    img_path = str(tmp_path / 'wayland.png')
+    def mock_subp(cmd, *args, **kwargs):
+        if cmd[0] == 'slurp':
+            return type('Res', (), {'returncode': 0, 'stdout': '10,10 100x100\n'})()
+        elif cmd[0] == 'grim':
+            with open(img_path, 'wb') as f:
+                f.write(b'\x89PNG\r\n\x1a\nfakeimage')
+            return type('Res', (), {'returncode': 0, 'stdout': ''})()
+        return type('Res', (), {'returncode': 0, 'stdout': ''})()
+
+    monkeypatch.setattr('subprocess.run', mock_subp)
+    res = tts_ocr.capture_region_with_wayland(img_path)
+    assert res is True
+
 
 
 

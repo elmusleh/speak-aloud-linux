@@ -29,6 +29,8 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
@@ -381,6 +383,7 @@ class TTSSettingsWindow(QDialog):
             self.chk_btn_anki.setChecked(False)
             self.chk_btn_sleep.setChecked(False)
             self.chk_btn_settings.setChecked(False)
+            self.chk_btn_audio_device.setChecked(False)
             self.chk_expand_drawer.setChecked(False)
             self._set_status("Applied 'Minimal' preset (essential playback controls only).")
         elif preset == "reader":
@@ -402,6 +405,7 @@ class TTSSettingsWindow(QDialog):
             self.chk_btn_anki.setChecked(False)
             self.chk_btn_sleep.setChecked(True)
             self.chk_btn_settings.setChecked(False)
+            self.chk_btn_audio_device.setChecked(False)
             self.chk_expand_drawer.setChecked(False)
             self._set_status("Applied 'Reader / Study' preset (speed, seek, transcript, notes & sleep).")
         elif preset == "productivity":
@@ -423,6 +427,7 @@ class TTSSettingsWindow(QDialog):
             self.chk_btn_anki.setChecked(False)
             self.chk_btn_sleep.setChecked(False)
             self.chk_btn_settings.setChecked(True)
+            self.chk_btn_audio_device.setChecked(True)
             self.chk_expand_drawer.setChecked(False)
             self._set_status("Applied 'Productivity' preset (queue, OCR, save MP3 & settings).")
         elif preset == "all":
@@ -444,6 +449,7 @@ class TTSSettingsWindow(QDialog):
             self.chk_btn_anki.setChecked(True)
             self.chk_btn_sleep.setChecked(True)
             self.chk_btn_settings.setChecked(True)
+            self.chk_btn_audio_device.setChecked(True)
             self.chk_expand_drawer.setChecked(False)
             self._set_status("Applied 'Enable All' preset (all buttons enabled).")
 
@@ -585,9 +591,95 @@ class TTSSettingsWindow(QDialog):
         self.chk_btn_settings = QCheckBox("⚙️ Settings Studio Shortcut (opens this settings window)")
         grid2.addWidget(self.chk_btn_settings, 4, 0)
 
+        self.chk_btn_audio_device = QCheckBox("🎧 Audio Output Device [Switch speakers / headphones]")
+        grid2.addWidget(self.chk_btn_audio_device, 4, 1)
+
         layout.addLayout(grid2)
 
-        # Section 3: Drawer Behavior & Display Preferences
+        # Section 3: Popup Opacity & Transparency
+        sec_op = QLabel("Popup Opacity & Transparency")
+        sec_op.setProperty("class", "sectionHeader")
+        layout.addWidget(sec_op)
+
+        op_row = QHBoxLayout()
+        op_row.addWidget(QLabel("Window Opacity:"))
+        self.sl_opacity = QSlider(Qt.Orientation.Horizontal)
+        self.sl_opacity.setRange(50, 100)
+        self.sl_opacity.setValue(95)
+        self.sl_opacity.setSingleStep(5)
+        self.lbl_opacity = QLabel("95%")
+        self.lbl_opacity.setMinimumWidth(40)
+        self.sl_opacity.valueChanged.connect(lambda v: self.lbl_opacity.setText(f"{v}%"))
+        op_row.addWidget(self.sl_opacity, 1)
+        op_row.addWidget(self.lbl_opacity)
+        layout.addLayout(op_row)
+
+        op_hint = QLabel("When mouse hovers over the player, opacity automatically restores to 100%.")
+        op_hint.setStyleSheet("color: #94A3B8; font-size: 10px; font-style: italic;")
+        layout.addWidget(op_hint)
+
+        # Section 4: Drawer Tools Display Order
+        sec_ord = QLabel("Drawer Tools Left-to-Right Display Order")
+        sec_ord.setProperty("class", "sectionHeader")
+        layout.addWidget(sec_ord)
+
+        ord_row = QHBoxLayout()
+        self.list_drawer_order = QListWidget()
+        self.list_drawer_order.setMaximumHeight(140)
+        self.list_drawer_order.setStyleSheet(
+            "background-color: #161822; border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; padding: 4px;"
+        )
+        ord_row.addWidget(self.list_drawer_order, 1)
+
+        btn_ord_col = QVBoxLayout()
+        btn_ord_up = QPushButton("▲ Move Up")
+        btn_ord_up.setObjectName("secondaryBtn")
+        btn_ord_up.clicked.connect(lambda: self._move_drawer_item(-1))
+        btn_ord_down = QPushButton("▼ Move Down")
+        btn_ord_down.setObjectName("secondaryBtn")
+        btn_ord_down.clicked.connect(lambda: self._move_drawer_item(1))
+        btn_ord_col.addWidget(btn_ord_up)
+        btn_ord_col.addWidget(btn_ord_down)
+        btn_ord_col.addStretch(1)
+        ord_row.addLayout(btn_ord_col)
+        layout.addLayout(ord_row)
+
+        # Section 5: Keyboard Shortcuts Remapper
+        sec_hk = QLabel("Single-Key Hotkey Remapper")
+        sec_hk.setProperty("class", "sectionHeader")
+        layout.addWidget(sec_hk)
+
+        hk_grid = QGridLayout()
+        hk_grid.setSpacing(6)
+        self.hk_inputs = {}
+        hotkey_defs = [
+            ('transcript', 'Live Transcript', 'T'),
+            ('bookmark', 'Bookmark Note', 'B'),
+            ('anki', 'Anki Export', 'A'),
+            ('queue', 'Queue Window', 'Q'),
+            ('ocr', 'OCR Region', 'O'),
+            ('sleep', 'Sleep Timer', 'Z'),
+            ('more', 'More Tools Toggle', 'M'),
+            ('stop', 'Stop Playback', 'S'),
+        ]
+        for idx, (hk_key, label, def_val) in enumerate(hotkey_defs):
+            r, c = divmod(idx, 2)
+            lbl = QLabel(f"{label}:")
+            lbl.setStyleSheet("font-size: 11px;")
+            ed = QLineEdit()
+            ed.setMaxLength(1)
+            ed.setFixedWidth(40)
+            ed.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            ed.setText(def_val)
+            self.hk_inputs[hk_key] = ed
+            row_box = QHBoxLayout()
+            row_box.addWidget(lbl)
+            row_box.addWidget(ed)
+            row_box.addStretch(1)
+            hk_grid.addLayout(row_box, r, c)
+        layout.addLayout(hk_grid)
+
+        # Section 6: Drawer Behavior & Display Preferences
         sec3 = QLabel("Drawer Behavior & Automation")
         sec3.setProperty("class", "sectionHeader")
         layout.addWidget(sec3)
@@ -598,6 +690,16 @@ class TTSSettingsWindow(QDialog):
         layout.addStretch(1)
         scroll.setWidget(w)
         return scroll
+
+    def _move_drawer_item(self, direction: int):
+        row = self.list_drawer_order.currentRow()
+        if row < 0:
+            return
+        new_row = row + direction
+        if 0 <= new_row < self.list_drawer_order.count():
+            item = self.list_drawer_order.takeItem(row)
+            self.list_drawer_order.insertItem(new_row, item)
+            self.list_drawer_order.setCurrentRow(new_row)
 
     def _build_player_filter_tab(self) -> QWidget:
         w = QWidget()
@@ -970,7 +1072,52 @@ class TTSSettingsWindow(QDialog):
         self.chk_btn_anki.setChecked(read_bool_cfg('hud_btn_anki', True))
         self.chk_btn_sleep.setChecked(read_bool_cfg('hud_btn_sleep', True))
         self.chk_btn_settings.setChecked(read_bool_cfg('hud_btn_settings', True))
+        self.chk_btn_audio_device.setChecked(read_bool_cfg('hud_btn_audio_device', True))
         self.chk_expand_drawer.setChecked(read_bool_cfg('hud_expand_tools_drawer', False))
+
+        # Popup Opacity & Transparency
+        try:
+            op_val = float(read_cfg('hud_opacity', '0.95'))
+            self.sl_opacity.setValue(max(50, min(100, int(round(op_val * 100)))))
+        except Exception:
+            self.sl_opacity.setValue(95)
+        self.lbl_opacity.setText(f"{self.sl_opacity.value()}%")
+
+        # Drawer Display Order
+        drawer_labels = {
+            'enqueue': '+ Queue Current',
+            'transcript': 'Live Transcript',
+            'queue': 'Queue Manager',
+            'ocr': 'OCR Region',
+            'save': 'Save Passage',
+            'bookmark': 'Bookmark Note',
+            'anki': 'Anki Flashcard',
+            'sleep': 'Sleep Timer',
+            'audio_device': 'Audio Device',
+            'settings': 'Settings Studio',
+        }
+        order_str = read_cfg('hud_drawer_order', '').strip()
+        custom_keys = [k.strip() for k in order_str.split(',') if k.strip() in drawer_labels] if order_str else []
+        default_keys = ['enqueue', 'transcript', 'queue', 'ocr', 'save', 'bookmark', 'anki', 'sleep', 'audio_device', 'settings']
+        final_keys = custom_keys + [k for k in default_keys if k not in custom_keys]
+
+        self.list_drawer_order.clear()
+        for k in final_keys:
+            item = QListWidgetItem(drawer_labels.get(k, k))
+            item.setData(Qt.ItemDataRole.UserRole, k)
+            self.list_drawer_order.addItem(item)
+
+        # Single-Key Hotkeys
+        raw_hk = read_cfg('custom_hotkeys', '')
+        parsed_hk = {}
+        if raw_hk:
+            try:
+                parsed_hk = json.loads(raw_hk)
+            except Exception:
+                pass
+        for k, ed in self.hk_inputs.items():
+            if k in parsed_hk and parsed_hk[k]:
+                ed.setText(str(parsed_hk[k]).upper()[:1])
 
         self.chk_filter_md.setChecked(read_bool_cfg('filter_markdown', True))
         self.chk_filter_urls.setChecked(read_bool_cfg('filter_urls', True))
@@ -1032,7 +1179,24 @@ class TTSSettingsWindow(QDialog):
         btn_anki = 'yes' if self.chk_btn_anki.isChecked() else 'no'
         btn_sleep = 'yes' if self.chk_btn_sleep.isChecked() else 'no'
         btn_settings = 'yes' if self.chk_btn_settings.isChecked() else 'no'
+        btn_audio_device = 'yes' if self.chk_btn_audio_device.isChecked() else 'no'
         expand_drawer = 'yes' if self.chk_expand_drawer.isChecked() else 'no'
+        hud_opacity = f"{self.sl_opacity.value() / 100.0:.2f}"
+
+        drawer_order_keys = []
+        for i in range(self.list_drawer_order.count()):
+            item = self.list_drawer_order.item(i)
+            k = item.data(Qt.ItemDataRole.UserRole)
+            if k:
+                drawer_order_keys.append(str(k))
+        drawer_order_str = ','.join(drawer_order_keys)
+
+        saved_hk = {}
+        for k, ed in self.hk_inputs.items():
+            val = ed.text().strip().upper()
+            if val:
+                saved_hk[k] = val
+        custom_hotkeys_str = json.dumps(saved_hk)
 
         f_md = 'yes' if self.chk_filter_md.isChecked() else 'no'
         f_urls = 'yes' if self.chk_filter_urls.isChecked() else 'no'
@@ -1104,7 +1268,11 @@ class TTSSettingsWindow(QDialog):
             'hud_btn_anki': btn_anki,
             'hud_btn_sleep': btn_sleep,
             'hud_btn_settings': btn_settings,
+            'hud_btn_audio_device': btn_audio_device,
             'hud_expand_tools_drawer': expand_drawer,
+            'hud_opacity': hud_opacity,
+            'hud_drawer_order': drawer_order_str,
+            'custom_hotkeys': custom_hotkeys_str,
         })
 
         # Also maintain legacy flat filenames for backward compatibility
@@ -1139,6 +1307,10 @@ class TTSSettingsWindow(QDialog):
         write_cfg('hud_btn_more', btn_more)
         write_cfg('hud_btn_transcript', btn_transcript)
         write_cfg('hud_btn_ocr', btn_ocr)
+        write_cfg('hud_btn_audio_device', btn_audio_device)
+        write_cfg('hud_opacity', hud_opacity)
+        write_cfg('hud_drawer_order', drawer_order_str)
+        write_cfg('custom_hotkeys', custom_hotkeys_str)
 
     def _speak_lexicon_preview(self):
         word = self.ed_lex_word.text().strip()
@@ -1276,9 +1448,46 @@ class TTSSettingsWindow(QDialog):
         btn_row.addStretch(1)
         layout.addLayout(btn_row)
 
+        sec_hist = QLabel('Spoken Reading History Log')
+        sec_hist.setProperty('class', 'sectionHeader')
+        layout.addWidget(sec_hist)
+
+        hist_box = QHBoxLayout()
+        btn_export_hist_csv = QPushButton('Export History (.csv)')
+        btn_export_hist_csv.setObjectName('secondaryBtn')
+        btn_export_hist_csv.clicked.connect(self._export_history_csv)
+        hist_box.addWidget(btn_export_hist_csv)
+
+        btn_export_hist_md = QPushButton('Export History (.md)')
+        btn_export_hist_md.setObjectName('secondaryBtn')
+        btn_export_hist_md.clicked.connect(self._export_history_md)
+        hist_box.addWidget(btn_export_hist_md)
+        hist_box.addStretch(1)
+        layout.addLayout(hist_box)
+
         layout.addStretch(1)
         self._refresh_analytics()
         return w
+
+    def _export_history_csv(self):
+        default_path = os.path.expanduser('~/Downloads/spoken_history.csv')
+        dest, _ = QFileDialog.getSaveFileName(self, 'Export Spoken History as CSV', default_path, 'CSV Files (*.csv)')
+        if dest:
+            from tts_text_processor import export_history_as_csv
+            if export_history_as_csv(dest):
+                self._set_status(f"Exported history to {os.path.basename(dest)}")
+            else:
+                self._set_status("No spoken history entries found to export.", is_error=True)
+
+    def _export_history_md(self):
+        default_path = os.path.expanduser('~/Downloads/spoken_history.md')
+        dest, _ = QFileDialog.getSaveFileName(self, 'Export Spoken History as Markdown', default_path, 'Markdown Files (*.md)')
+        if dest:
+            from tts_text_processor import export_history_as_markdown
+            if export_history_as_markdown(dest):
+                self._set_status(f"Exported history to {os.path.basename(dest)}")
+            else:
+                self._set_status("No spoken history entries found to export.", is_error=True)
 
     def _refresh_analytics(self):
         try:

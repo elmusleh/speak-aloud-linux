@@ -11,6 +11,7 @@ Combines:
 """
 
 import argparse
+import datetime
 import hashlib
 import json
 import os
@@ -908,7 +909,15 @@ class TTSSettingsStore:
         'hud_btn_anki': 'yes',
         'hud_btn_sleep': 'yes',
         'hud_btn_settings': 'yes',
+        'hud_btn_audio_device': 'yes',
         'hud_expand_tools_drawer': 'no',
+        'hud_opacity': '0.95',
+        'hud_primary_order': '',
+        'hud_drawer_order': '',
+        'custom_hotkeys': '',
+        'active_hud_profile': 'default',
+        'battery_saver': 'yes',
+        'ocr_restore_punctuation': 'yes',
     }
 
     def __init__(self, config_dir: Optional[str] = None):
@@ -1001,7 +1010,15 @@ class TTSSettingsStore:
             'hud_btn_anki': _norm_yes_no(src.get('hud_btn_anki'), True),
             'hud_btn_sleep': _norm_yes_no(src.get('hud_btn_sleep'), True),
             'hud_btn_settings': _norm_yes_no(src.get('hud_btn_settings'), True),
+            'hud_btn_audio_device': _norm_yes_no(src.get('hud_btn_audio_device'), True),
             'hud_expand_tools_drawer': _norm_yes_no(src.get('hud_expand_tools_drawer'), False),
+            'hud_opacity': f"{_parse_float_clamped(src.get('hud_opacity'), 0.50, 1.00, 0.95):.2f}",
+            'hud_primary_order': _sanitize_str(src.get('hud_primary_order'), 256, ''),
+            'hud_drawer_order': _sanitize_str(src.get('hud_drawer_order'), 256, ''),
+            'custom_hotkeys': _sanitize_str(src.get('custom_hotkeys'), 1024, ''),
+            'active_hud_profile': _sanitize_str(src.get('active_hud_profile'), 32, 'default'),
+            'battery_saver': _norm_yes_no(src.get('battery_saver'), True),
+            'ocr_restore_punctuation': _norm_yes_no(src.get('ocr_restore_punctuation'), True),
         }
         return validated
 
@@ -1172,6 +1189,145 @@ def apply_adaptive_prosody(text: str) -> str:
     return res
 
 
+def restore_punctuation_for_ocr(text: str) -> str:
+    """
+    Restore sentence boundaries and punctuation in OCR text.
+    Raw OCR often drops periods at line breaks, collapses multiple lines,
+    or loses punctuation between clauses. This heuristic pass restores
+    natural sentence stops so neural voices pause naturally.
+    """
+    if not text:
+        return ''
+    clean_txt = re.sub(r'\s+([,.;:!?])', r'\1', text)
+    lines = [ln.strip() for ln in clean_txt.splitlines() if ln.strip()]
+    if not lines:
+        return ''
+
+    restored_lines = []
+    for i, line in enumerate(lines):
+        if line and line[0].islower():
+            line = line[0].upper() + line[1:]
+        if not re.search(r'[.?!:;]$', line):
+            if i + 1 < len(lines):
+                next_ln = lines[i + 1]
+                if re.match(r'^[A-Z0-9\u0621-\u064A\u0671-\u06D3\u00C0-\u017F]', next_ln):
+                    line = line + '.'
+            else:
+                line = line + '.'
+        restored_lines.append(line)
+
+    result = ' '.join(restored_lines)
+    result = re.sub(r'([.?!])([A-Za-z\u0621-\u064A])', r'\1 \2', result)
+    result = re.sub(r'\s{2,}', ' ', result)
+    return result.strip()
+
+
+def get_history_file(config_dir: Optional[str] = None) -> str:
+    if config_dir:
+        os.makedirs(config_dir, mode=0o700, exist_ok=True)
+        return os.path.join(config_dir, 'history.jsonl')
+    hdir = os.path.expanduser('~/.local/share/speak-aloud')
+    os.makedirs(hdir, mode=0o700, exist_ok=True)
+    return os.path.join(hdir, 'history.jsonl')
+
+
+def record_spoken_history(
+    title: str,
+    text: str = '',
+    lang: str = 'en',
+    duration: float = 0.0,
+    voice: str = '',
+    config_dir: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Append a spoken reading entry to history.jsonl."""
+    if not text:
+        text = title
+        title = 'Untitled Passage'
+    entry = {
+        'timestamp': datetime.datetime.now().isoformat(timespec='seconds'),
+        'title': title or 'Untitled Passage',
+        'chars': len(text),
+        'words': len(text.split()),
+        'lang': lang,
+        'voice': voice,
+        'duration_est': round(duration if duration > 0 else (len(text) / 15.0), 1),
+        'text': text,
+    }
+    hfile = get_history_file(config_dir)
+    try:
+        with open(hfile, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + '\n')
+    except Exception:
+        pass
+    return entry
+
+
+def load_spoken_history(limit: int = 100, config_dir: Optional[str] = None) -> List[Dict[str, Any]]:
+    hfile = get_history_file(config_dir)
+    if not os.path.isfile(hfile):
+        return []
+    records = []
+    try:
+        with open(hfile, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        records.append(json.loads(line))
+                    except Exception:
+                        pass
+    except Exception:
+        return []
+    return records[-limit:]
+
+
+def export_history_as_markdown(out_path: str, config_dir: Optional[str] = None) -> bool:
+    records = load_spoken_history(limit=500, config_dir=config_dir)
+    if not records:
+        return False
+    try:
+        with open(out_path, 'w', encoding='utf-8') as f:
+            f.write('# Speak a Loud — Spoken Reading History\n\n')
+            f.write(f'Generated: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}\n\n')
+            f.write('| Date / Time | Title | Language | Words | Est. Duration |\n')
+            f.write('| :--- | :--- | :--- | :--- | :--- |\n')
+            for r in reversed(records):
+                ts = r.get('timestamp', '').replace('T', ' ')
+                title = (r.get('text') or r.get('title') or 'Untitled')[:40].replace('|', '-')
+                lang = r.get('lang', 'en').upper()
+                words = r.get('words', len((r.get('text') or '').split()))
+                dur = f"{r.get('duration_est', 0)}s"
+                f.write(f'| {ts} | {title} | {lang} | {words} | {dur} |\n')
+        return True
+    except Exception:
+        return False
+
+
+def export_history_as_csv(out_path: str, config_dir: Optional[str] = None) -> bool:
+    import csv
+    records = load_spoken_history(limit=1000, config_dir=config_dir)
+    if not records:
+        return False
+    try:
+        with open(out_path, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=['Timestamp', 'Language', 'Voice', 'DurationSec', 'WordCount', 'Chars', 'Text'])
+            writer.writeheader()
+            for r in reversed(records):
+                txt = r.get('text') or r.get('title') or ''
+                writer.writerow({
+                    'Timestamp': r.get('timestamp', ''),
+                    'Language': r.get('lang', ''),
+                    'Voice': r.get('voice', ''),
+                    'DurationSec': r.get('duration_est', 0.0),
+                    'WordCount': r.get('words', len(txt.split())),
+                    'Chars': r.get('chars', len(txt)),
+                    'Text': txt,
+                })
+        return True
+    except Exception:
+        return False
+
+
 def clean_and_filter_text(
     text: str,
     filter_markdown: bool = True,
@@ -1182,10 +1338,14 @@ def clean_and_filter_text(
     lexicon: Optional[Dict[str, str]] = None,
     max_chars: int = 20000,
     adaptive_prosody: bool = False,
+    restore_ocr_punct: bool = False,
 ) -> str:
     """Clean control characters, markdown formatting, URLs, technical symbols, and lexicon aliases."""
     if not text:
         return ''
+
+    if restore_ocr_punct:
+        text = restore_punctuation_for_ocr(text)
 
     # 1. Strip ASCII control chars & Unicode bidi marks
     text = CTRL_CHARS_RE.sub('', text)
@@ -1684,6 +1844,7 @@ def process_and_write_segments(
     replace_symbols: bool = True,
     use_lexicon: bool = True,
     adaptive_prosody: bool = True,
+    restore_ocr_punct: bool = False,
 ) -> int:
     os.makedirs(workdir, mode=0o700, exist_ok=True)
     ensure_runtime_symlinks()
@@ -1696,6 +1857,7 @@ def process_and_write_segments(
         replace_symbols=replace_symbols,
         use_lexicon=use_lexicon,
         adaptive_prosody=adaptive_prosody,
+        restore_ocr_punct=restore_ocr_punct,
     )
 
     if speakable_count(cleaned_text) < 2:
@@ -1774,6 +1936,7 @@ def main():
     parser.add_argument('--replace-symbols', default='yes')
     parser.add_argument('--use-lexicon', default='yes')
     parser.add_argument('--adaptive-prosody', default='yes')
+    parser.add_argument('--restore-ocr-punct', default='no')
     parser.add_argument('--summarize', default='no')
     args = parser.parse_args()
 
@@ -1804,6 +1967,7 @@ def main():
         replace_symbols=to_bool(args.replace_symbols, True),
         use_lexicon=to_bool(args.use_lexicon, True),
         adaptive_prosody=to_bool(args.adaptive_prosody, True),
+        restore_ocr_punct=to_bool(args.restore_ocr_punct, False),
     )
     print(count)
 

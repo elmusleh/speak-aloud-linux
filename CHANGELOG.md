@@ -2,6 +2,19 @@
 
 ## 2026-11-09
 
+- **Reorderable Buttons, HUD Transparency, Audio Sink Selector & System Integrations (`tts_hud.py`, `tts-settings.py`, `tts_text_processor.py`, `speak.sh`, `tts_synth_worker.py`, `tts_ocr.py`)**:
+  - **Reorderable Tools Drawer**: Added dynamic drawer tool reordering inside Settings Studio (`QListWidget` with Move Up/Down controls) and live layout reordering via `hud_drawer_order` in `FloatingPlayerWindow`.
+  - **HUD Opacity & Transparency Slider**: Added slider in Settings Studio (50% to 100%, default 95%) with automatic 100% opacity boost on hover (`enterEvent`/`leaveEvent`).
+  - **Custom Keyboard Hotkey Remapper**: Added single-key shortcut remapper in Settings Studio mapping custom hotkeys (`transcript`, `bookmark`, `anki`, `queue`, `ocr`, `sleep`, `more`, `stop`) saved to `custom_hotkeys`.
+  - **Profile Switcher Shortcut (<kbd>Shift+P</kbd>)**: Quick keyboard shortcut to rotate between Minimal, Reader, Productivity, and Default HUD button profiles.
+  - **Audio Output Device Selector**: Added audio device switcher button and menu in More Tools Drawer querying PipeWire (`wpctl status`) and PulseAudio (`pactl list short sinks`), switching default output sink on demand.
+  - **Gapless Segment Audio Crossfading**: Added `--gapless-audio=yes --audio-stream-silence=yes --audio-buffer=0.25` in `speak.sh` for seamless inter-segment playback.
+  - **Battery & AC Power Awareness**: Added battery detection (`/sys/class/power_supply/BAT*/status`), throttling background synthesis workers when running on battery to conserve power.
+  - **Desktop Notification Transport Actions**: Added interactive action buttons (`--action="pause=Pause" --action="stop=Stop"`) to desktop speech notifications.
+  - **Automatic Text Punctuation Restorer for OCR**: Added `restore_punctuation_for_ocr` pass healing missing trailing periods, detached commas/question marks, and capitalizing lines for natural voice cadence.
+  - **Spoken Reading History Log & Exporter**: Added JSONL session logger (`record_spoken_history`) and one-click Markdown and CSV export in Settings Studio.
+  - **Async Synthesis Server Hardening**: Added `MAX_MESSAGE_BYTES = 1MB` payload cap and sliding-window rate-limiting in `AsyncSynthServer`.
+  - **Wayland Native Screen Selection Fallback**: Added `slurp` + `grim` fallback in `tts_ocr.py` for Wayland desktop sessions.
 - **Popup Buttons Management Tab in Settings Studio (`tts-settings.py`, `tts_hud.py`, `tts_text_processor.py`)**: Added a dedicated "Popup Buttons" tab in the Settings Studio allowing users to toggle and customize exactly which transport controls and action buttons appear in the Floating Player popup. Includes 4 one-click presets (**Minimal**, **Reader / Study**, **Productivity**, **Enable All**), individual control over all primary and drawer buttons, automatic drawer toggle hiding when all tools are disabled, and instant dynamic reload of button visibility on save without restarting the daemon.
 - **OCR Lifecycle & Screen Font Preprocessing Fix (`tts_ocr.py`)**: Fixed `RegionOverlay` Qt window lifecycle to unblock `app.exec()` on region selection, right-click, and Escape (preventing `speak.sh` hangs). Added image preprocessing (2.5x Lanczos upscale, grayscale conversion, contrast boosting) and multi-PSM fallback (`--psm 6`, `--psm 3`, `--psm 11`) to accurately read fine screen text.
 - **Compact Essentials HUD & Collapsible More Tools Drawer (`tts_hud.py`)**: Redesigned Floating HUD header by removing confusing status LED dot and truncated title snippet. Replaced with a prominent Speed Pill (`#speedPill`) on the left, clear mode badge, and essential controls (Play/Pause, Jump ±10s, Stop, Scrubber, Volume, Close). Moved secondary actions (`Enqueue`, `Transcript`, `Queue`, `OCR`, `Save MP3`, `Bookmark`, `Anki`, `Sleep`, `Settings`) into a collapsible **More Tools Drawer** toggled via the `...` button or <kbd>M</kbd> hotkey.

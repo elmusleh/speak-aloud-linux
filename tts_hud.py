@@ -1837,10 +1837,16 @@ class FloatingPlayerWindow(QWidget):
 
     SPEED_STEPS = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
 
-    def __init__(self, controller: MPVTimelineController, queue_window: QueueManagerWindow):
+    def __init__(
+        self,
+        controller: MPVTimelineController,
+        queue_window: QueueManagerWindow,
+        config_dir: Optional[str] = None,
+    ):
         super().__init__(None)
         self.controller = controller
         self.queue_window = queue_window
+        self.config_dir = config_dir or CONFIG_DIR
         self.user_dismissed_session: str = ''
         self._spin_angle: int = 0
         self._chunks_completed_at: float = 0.0
@@ -1975,6 +1981,11 @@ class FloatingPlayerWindow(QWidget):
         self.btn_sleep.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.btn_sleep.customContextMenuRequested.connect(self._show_sleep_context_menu)
         self.tools_layout.addWidget(self.btn_sleep)
+
+        # Audio Output Device Selector (headphones)
+        self.btn_audio_device = self._make_util_btn('headphones', 'Audio Output Device (Switch speakers / headphones)')
+        self.btn_audio_device.clicked.connect(self._show_audio_devices_menu)
+        self.tools_layout.addWidget(self.btn_audio_device)
 
         # Open Settings (sliders)
         self.btn_settings = self._make_util_btn('sliders', 'Open TTS Settings')
@@ -2186,16 +2197,43 @@ class FloatingPlayerWindow(QWidget):
                 self.chunk_box.setVisible(False)
 
         # More Tools Drawer Buttons
+        drawer_buttons_map = {
+            'enqueue': getattr(self, 'btn_enqueue', None),
+            'transcript': getattr(self, 'btn_transcript', None),
+            'queue': getattr(self, 'btn_queue', None),
+            'ocr': getattr(self, 'btn_ocr', None),
+            'save': getattr(self, 'btn_save', None),
+            'bookmark': getattr(self, 'btn_bookmark', None),
+            'anki': getattr(self, 'btn_anki', None),
+            'sleep': getattr(self, 'btn_sleep', None),
+            'audio_device': getattr(self, 'btn_audio_device', None),
+            'settings': getattr(self, 'btn_settings', None),
+        }
+
+        # Dynamic reordering of drawer buttons if custom order configured
+        order_str = st.get('hud_drawer_order', '').strip()
+        custom_order = [k.strip() for k in order_str.split(',') if k.strip() in drawer_buttons_map] if order_str else []
+        default_order = ['enqueue', 'transcript', 'queue', 'ocr', 'save', 'bookmark', 'anki', 'sleep', 'audio_device', 'settings']
+        final_order = custom_order + [k for k in default_order if k not in custom_order]
+
+        if hasattr(self, 'tools_layout') and hasattr(self, 'tools_box'):
+            for key in final_order:
+                btn = drawer_buttons_map.get(key)
+                if btn is not None:
+                    self.tools_layout.removeWidget(btn)
+                    self.tools_layout.addWidget(btn)
+
         drawer_buttons = [
-            (getattr(self, 'btn_enqueue', None), st.get('hud_btn_enqueue', 'yes') == 'yes'),
-            (getattr(self, 'btn_transcript', None), st.get('hud_btn_transcript', 'yes') == 'yes'),
-            (getattr(self, 'btn_queue', None), st.get('hud_btn_queue', 'yes') == 'yes'),
-            (getattr(self, 'btn_ocr', None), st.get('hud_btn_ocr', 'yes') == 'yes'),
-            (getattr(self, 'btn_save', None), st.get('hud_btn_save', 'yes') == 'yes'),
-            (getattr(self, 'btn_bookmark', None), st.get('hud_btn_bookmark', 'yes') == 'yes'),
-            (getattr(self, 'btn_anki', None), st.get('hud_btn_anki', 'yes') == 'yes'),
-            (getattr(self, 'btn_sleep', None), st.get('hud_btn_sleep', 'yes') == 'yes'),
-            (getattr(self, 'btn_settings', None), st.get('hud_btn_settings', 'yes') == 'yes'),
+            (drawer_buttons_map['enqueue'], st.get('hud_btn_enqueue', 'yes') == 'yes'),
+            (drawer_buttons_map['transcript'], st.get('hud_btn_transcript', 'yes') == 'yes'),
+            (drawer_buttons_map['queue'], st.get('hud_btn_queue', 'yes') == 'yes'),
+            (drawer_buttons_map['ocr'], st.get('hud_btn_ocr', 'yes') == 'yes'),
+            (drawer_buttons_map['save'], st.get('hud_btn_save', 'yes') == 'yes'),
+            (drawer_buttons_map['bookmark'], st.get('hud_btn_bookmark', 'yes') == 'yes'),
+            (drawer_buttons_map['anki'], st.get('hud_btn_anki', 'yes') == 'yes'),
+            (drawer_buttons_map['sleep'], st.get('hud_btn_sleep', 'yes') == 'yes'),
+            (drawer_buttons_map['audio_device'], st.get('hud_btn_audio_device', 'yes') == 'yes'),
+            (drawer_buttons_map['settings'], st.get('hud_btn_settings', 'yes') == 'yes'),
         ]
         visible_drawer_count = 0
         for btn, is_vis in drawer_buttons:
@@ -2224,7 +2262,171 @@ class FloatingPlayerWindow(QWidget):
                 self.tools_box.setVisible(False)
                 if hasattr(self, 'btn_more'):
                     self.btn_more.setChecked(False)
+
+        # Popup Opacity & Transparency Handling
+        try:
+            self.hud_opacity = float(st.get('hud_opacity', '0.95'))
+        except (ValueError, TypeError):
+            self.hud_opacity = 0.95
+        self.hud_opacity = max(0.50, min(1.00, self.hud_opacity))
+        self.setWindowOpacity(self.hud_opacity)
+
+        # Custom hotkeys map
+        self._custom_hotkeys = {}
+        hotkey_str = st.get('custom_hotkeys', '')
+        if hotkey_str:
+            try:
+                self._custom_hotkeys = json.loads(hotkey_str)
+            except Exception:
+                pass
+        self._active_hud_profile = st.get('active_hud_profile', 'default')
         self.adjustSize()
+
+    def enterEvent(self, event):
+        """Boost opacity to 100% when hovering over the floating player."""
+        self.setWindowOpacity(1.0)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        """Restore user-configured opacity when mouse leaves the floating player."""
+        self.setWindowOpacity(getattr(self, 'hud_opacity', 0.95))
+        super().leaveEvent(event)
+
+    def cycle_hud_profile(self):
+        """Cycle between presets: Minimal -> Reader -> Productivity -> Default (Shift+P)."""
+        profiles = ['minimal', 'reader', 'productivity', 'default']
+        cur = getattr(self, '_active_hud_profile', 'default')
+        next_idx = (profiles.index(cur) + 1) % len(profiles) if cur in profiles else 0
+        new_prof = profiles[next_idx]
+        self._active_hud_profile = new_prof
+
+        try:
+            store = TTSSettingsStore(getattr(self, 'config_dir', CONFIG_DIR))
+            if new_prof == 'minimal':
+                patch = {
+                    'hud_btn_speed': 'yes', 'hud_btn_mode_tag': 'no', 'hud_btn_back': 'no',
+                    'hud_btn_fwd': 'no', 'hud_btn_stop': 'yes', 'hud_show_progress': 'yes',
+                    'hud_show_chunks': 'no', 'hud_btn_close': 'yes', 'hud_btn_more': 'no',
+                    'hud_btn_transcript': 'no', 'hud_btn_enqueue': 'no', 'hud_btn_queue': 'no',
+                    'hud_btn_ocr': 'no', 'hud_btn_save': 'no', 'hud_btn_bookmark': 'no',
+                    'hud_btn_anki': 'no', 'hud_btn_sleep': 'no', 'hud_btn_settings': 'no',
+                    'hud_btn_audio_device': 'no', 'hud_expand_tools_drawer': 'no',
+                    'active_hud_profile': 'minimal'
+                }
+            elif new_prof == 'reader':
+                patch = {
+                    'hud_btn_speed': 'yes', 'hud_btn_mode_tag': 'yes', 'hud_btn_back': 'yes',
+                    'hud_btn_fwd': 'yes', 'hud_btn_stop': 'yes', 'hud_show_progress': 'yes',
+                    'hud_show_chunks': 'yes', 'hud_btn_close': 'yes', 'hud_btn_more': 'yes',
+                    'hud_btn_transcript': 'yes', 'hud_btn_enqueue': 'no', 'hud_btn_queue': 'no',
+                    'hud_btn_ocr': 'no', 'hud_btn_save': 'no', 'hud_btn_bookmark': 'yes',
+                    'hud_btn_anki': 'no', 'hud_btn_sleep': 'yes', 'hud_btn_settings': 'no',
+                    'hud_btn_audio_device': 'yes', 'hud_expand_tools_drawer': 'no',
+                    'active_hud_profile': 'reader'
+                }
+            elif new_prof == 'productivity':
+                patch = {
+                    'hud_btn_speed': 'yes', 'hud_btn_mode_tag': 'yes', 'hud_btn_back': 'yes',
+                    'hud_btn_fwd': 'yes', 'hud_btn_stop': 'yes', 'hud_show_progress': 'yes',
+                    'hud_show_chunks': 'yes', 'hud_btn_close': 'yes', 'hud_btn_more': 'yes',
+                    'hud_btn_transcript': 'yes', 'hud_btn_enqueue': 'yes', 'hud_btn_queue': 'yes',
+                    'hud_btn_ocr': 'yes', 'hud_btn_save': 'yes', 'hud_btn_bookmark': 'no',
+                    'hud_btn_anki': 'no', 'hud_btn_sleep': 'no', 'hud_btn_settings': 'yes',
+                    'hud_btn_audio_device': 'yes', 'hud_expand_tools_drawer': 'no',
+                    'active_hud_profile': 'productivity'
+                }
+            else:
+                patch = {
+                    'hud_btn_speed': 'yes', 'hud_btn_mode_tag': 'yes', 'hud_btn_back': 'yes',
+                    'hud_btn_fwd': 'yes', 'hud_btn_stop': 'yes', 'hud_show_progress': 'yes',
+                    'hud_show_chunks': 'yes', 'hud_btn_close': 'yes', 'hud_btn_more': 'yes',
+                    'hud_btn_transcript': 'yes', 'hud_btn_enqueue': 'yes', 'hud_btn_queue': 'yes',
+                    'hud_btn_ocr': 'yes', 'hud_btn_save': 'yes', 'hud_btn_bookmark': 'yes',
+                    'hud_btn_anki': 'yes', 'hud_btn_sleep': 'yes', 'hud_btn_settings': 'yes',
+                    'hud_btn_audio_device': 'yes', 'hud_expand_tools_drawer': 'no',
+                    'active_hud_profile': 'default'
+                }
+            store.save(patch)
+            self.apply_button_settings(patch)
+            if hasattr(self, 'lbl_state_hint'):
+                self.lbl_state_hint.setText(f"Profile: {new_prof.capitalize()}")
+        except Exception:
+            pass
+
+    def _show_audio_devices_menu(self):
+        """Display a context menu of active PipeWire / PulseAudio output sinks."""
+        menu = QMenu(self)
+        menu.setStyleSheet(self.styleSheet())
+        devices: List[Dict[str, Any]] = []
+
+        # 1. PipeWire wpctl status
+        if shutil.which('wpctl'):
+            try:
+                proc = subprocess.run(['wpctl', 'status'], capture_output=True, text=True, timeout=2, check=False)
+                if proc.returncode == 0:
+                    in_sinks = False
+                    for line in proc.stdout.splitlines():
+                        if 'Sinks:' in line:
+                            in_sinks = True
+                            continue
+                        elif in_sinks and (line.startswith(' ├─') or line.startswith(' └─') or line.startswith(' │')):
+                            if 'Sources:' in line or 'Filters:' in line or 'Streams:' in line:
+                                break
+                            m = re.search(r'([*]?)\s*(\d+)\.\s+(.*?)(?:\[.*\])?\s*$', line)
+                            if m:
+                                is_def = bool(m.group(1) == '*')
+                                dev_id = m.group(2)
+                                dev_name = m.group(3).strip()
+                                devices.append({'backend': 'wpctl', 'id': dev_id, 'name': dev_name, 'is_default': is_def})
+                        elif in_sinks and not line.strip():
+                            break
+            except Exception:
+                pass
+
+        # 2. PulseAudio pactl list short sinks fallback
+        if not devices and shutil.which('pactl'):
+            try:
+                proc = subprocess.run(['pactl', 'list', 'short', 'sinks'], capture_output=True, text=True, timeout=2, check=False)
+                if proc.returncode == 0:
+                    def_proc = subprocess.run(['pactl', 'get-default-sink'], capture_output=True, text=True, timeout=1, check=False)
+                    def_sink = def_proc.stdout.strip()
+                    for line in proc.stdout.splitlines():
+                        parts = line.split('\t')
+                        if len(parts) >= 2:
+                            s_name = parts[1]
+                            devices.append({
+                                'backend': 'pactl',
+                                'id': s_name,
+                                'name': s_name.replace('alsa_output.', '').replace('.stereo', '').replace('_', ' '),
+                                'is_default': (s_name == def_sink)
+                            })
+            except Exception:
+                pass
+
+        if not devices:
+            act = menu.addAction('No external sinks detected (System Default active)')
+            act.setEnabled(False)
+        else:
+            header_act = menu.addAction('🔊 Select Output Audio Sink:')
+            header_act.setEnabled(False)
+            menu.addSeparator()
+
+            for dev in devices:
+                label = f"{'✓ ' if dev['is_default'] else '   '}{dev['name']}"
+                act = menu.addAction(label)
+                def _switch(d=dev):
+                    try:
+                        if d['backend'] == 'wpctl':
+                            subprocess.run(['wpctl', 'set-default', d['id']], check=False)
+                        else:
+                            subprocess.run(['pactl', 'set-default-sink', d['id']], check=False)
+                        if hasattr(self, 'lbl_state_hint'):
+                            self.lbl_state_hint.setText(d['name'][:18])
+                    except Exception:
+                        pass
+                act.triggered.connect(_switch)
+
+        menu.exec(QCursor.pos())
 
     def _on_speed_wheel(self, event):
         """Allow fine-grained speed adjustment via scroll wheel over the speed pill (+/- 0.05x)."""
@@ -2261,6 +2463,7 @@ class FloatingPlayerWindow(QWidget):
             getattr(self, 'btn_bookmark', None),
             getattr(self, 'btn_anki', None),
             getattr(self, 'btn_sleep', None),
+            getattr(self, 'btn_audio_device', None),
             getattr(self, 'btn_settings', None),
             getattr(self, 'btn_close', None),
         ):
@@ -2869,7 +3072,7 @@ class FloatingPlayerWindow(QWidget):
 
         # Optional: Sync note to configured Obsidian Vault
         try:
-            store = TTSSettingsStore()
+            store = TTSSettingsStore(getattr(self, 'config_dir', CONFIG_DIR))
             obs_vault = store.get('obsidian_vault', '').strip()
             obs_folder = store.get('obsidian_folder', 'Reading Notes').strip() or 'Reading Notes'
             if obs_vault:
@@ -3070,8 +3273,26 @@ class FloatingPlayerWindow(QWidget):
 
     def keyPressEvent(self, event):
         key = event.key()
+        key_txt = event.text().upper().strip()
         mods = event.modifiers()
         shift = bool(mods & Qt.KeyboardModifier.ShiftModifier)
+
+        # Profile Switcher shortcut (Shift+P)
+        if key == Qt.Key.Key_P and shift:
+            self.cycle_hud_profile()
+            event.accept()
+            return
+
+        hk = getattr(self, '_custom_hotkeys', {}) or {}
+        hk_t = hk.get('transcript', 'T').upper()
+        hk_m = hk.get('more', 'M').upper()
+        hk_q = hk.get('queue', 'Q').upper()
+        hk_b = hk.get('bookmark', 'B').upper()
+        hk_a = hk.get('anki', 'A').upper()
+        hk_z = hk.get('sleep', 'Z').upper()
+        hk_o = hk.get('ocr', 'O').upper()
+        hk_s = hk.get('stop', 'S').upper()
+
         if key in (Qt.Key.Key_Space, Qt.Key.Key_K):
             self._on_hero_clicked()
             event.accept()
@@ -3104,42 +3325,42 @@ class FloatingPlayerWindow(QWidget):
                 self._step_speed(1)
                 event.accept()
                 return
-        if key == Qt.Key.Key_T:
+        if key == Qt.Key.Key_T or (key_txt and key_txt == hk_t):
             if hasattr(self, 'btn_transcript') and not self.btn_transcript.isHidden():
                 self._toggle_transcript()
                 event.accept()
                 return
-        if key == Qt.Key.Key_M:
+        if key == Qt.Key.Key_M or (key_txt and key_txt == hk_m):
             if hasattr(self, 'btn_more') and not self.btn_more.isHidden():
                 self._toggle_tools_drawer()
                 event.accept()
                 return
-        if key == Qt.Key.Key_Q:
+        if key == Qt.Key.Key_Q or (key_txt and key_txt == hk_q):
             if hasattr(self, 'btn_queue') and not self.btn_queue.isHidden():
                 self._toggle_queue_window()
                 event.accept()
                 return
-        if key == Qt.Key.Key_B:
+        if key == Qt.Key.Key_B or (key_txt and key_txt == hk_b):
             if hasattr(self, 'btn_bookmark') and not self.btn_bookmark.isHidden():
                 self._on_bookmark_clicked()
                 event.accept()
                 return
-        if key == Qt.Key.Key_A:
+        if key == Qt.Key.Key_A or (key_txt and key_txt == hk_a):
             if hasattr(self, 'btn_anki') and not self.btn_anki.isHidden():
                 self._on_anki_clicked()
                 event.accept()
                 return
-        if key == Qt.Key.Key_Z:
+        if key == Qt.Key.Key_Z or (key_txt and key_txt == hk_z):
             if hasattr(self, 'btn_sleep') and not self.btn_sleep.isHidden():
                 self._cycle_sleep_timer()
                 event.accept()
                 return
-        if key == Qt.Key.Key_O:
+        if key == Qt.Key.Key_O or (key_txt and key_txt == hk_o):
             if hasattr(self, 'btn_ocr') and not self.btn_ocr.isHidden():
                 self._on_ocr_clicked()
                 event.accept()
                 return
-        if key == Qt.Key.Key_S:
+        if key == Qt.Key.Key_S or (key_txt and key_txt == hk_s):
             if hasattr(self, 'btn_stop') and not self.btn_stop.isHidden():
                 self._on_stop_clicked()
                 event.accept()

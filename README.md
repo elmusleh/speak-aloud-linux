@@ -53,7 +53,15 @@ A desktop Text-to-Speech (TTS) studio for Linux with seamless trilingual (**Engl
   - Detects English, Arabic (with embedded number merging), and German segments within the same passage and switches voices seamlessly without misclassifying English technical jargon.
 - **Modern Settings & Studio Test Bench (`tts-settings.py`)**:
   - Tabbed PyQt6 dark-slate settings window with voice dropdowns, live **Test EN / AR / DE** buttons, per-language rate sliders, Markdown filter toggles, translation settings, a **Quick Speak & MP3 Export Bench**, and audio cache management.
-  - **Dedicated "Popup Buttons" Management Tab**: Customize which buttons and actions are shown or hidden in the Floating Player popup. Features one-click presets (**Minimal**, **Reader / Study**, **Productivity**, **Enable All**), granular checkboxes for both primary transport controls and drawer tools, auto-hiding of the drawer toggle when all tools are disabled, and real-time live synchronization without daemon restarts.
+  - **Dedicated "Popup Buttons" Management Tab**: Customize which buttons and actions are shown or hidden in the Floating Player popup. Features one-click presets (**Minimal**, **Reader / Study**, **Productivity**, **Enable All**), granular checkboxes for both primary transport controls and drawer tools, auto-hiding of the drawer toggle when all tools are disabled, **reorderable drawer tool items**, **window opacity & transparency slider** with smart hover boost, a **single-key hotkey remapper**, and real-time live synchronization without daemon restarts.
+- **Audio Output Device Selector & Profile Switcher (<kbd>Shift+P</kbd>)**:
+  - Seamlessly switch between headphones, external speakers, and Bluetooth sinks on demand via PipeWire (`wpctl`) and PulseAudio (`pactl`).
+  - Press <kbd>Shift+P</kbd> to cycle instantly between Minimal, Reader, Productivity, and Default player layouts.
+- **Spoken Reading History Log & Exporter**:
+  - Automatically records spoken passages with character/word metrics and timestamps to `~/.local/share/speak-aloud/history.jsonl`, with one-click export to formatted Markdown tables and CSV spreadsheets in Settings Studio.
+- **Battery Saver Awareness & Gapless Audio Transitions**:
+  - Automatically reduces background parallel chunk concurrency when running on battery (`/sys/class/power_supply/BAT*/status`).
+  - Configures mpv gapless audio buffer flags for continuous crossfading between sentences.
 
 ## 🛠️ Dependencies
 

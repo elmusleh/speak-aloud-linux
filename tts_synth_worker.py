@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from typing import Any, Dict, Optional
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -398,10 +399,14 @@ def synthesize_segment_sync(
 class AsyncSynthServer:
     """Persistent UNIX domain socket server for zero-startup-overhead TTS synthesis."""
 
+    MAX_MESSAGE_BYTES: int = 1024 * 1024  # 1 MB maximum payload limit
+    MAX_REQUESTS_PER_SEC: int = 50
+
     def __init__(self, socket_path: Optional[str] = None):
         self.socket_path = socket_path or get_synth_socket_path()
         self._server: Optional[asyncio.AbstractServer] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._request_timestamps: List[float] = []
 
     async def _handle_client(
         self,
@@ -409,9 +414,29 @@ class AsyncSynthServer:
         writer: asyncio.StreamWriter,
     ) -> None:
         try:
-            raw = await asyncio.wait_for(reader.readline(), timeout=5.0)
+            # 1. Enforce rate limiting (sliding window 2s)
+            now = time.time()
+            self._request_timestamps = [t for t in self._request_timestamps if now - t <= 2.0]
+            if len(self._request_timestamps) >= self.MAX_REQUESTS_PER_SEC * 2:
+                writer.write((json.dumps({'ok': False, 'error': 'rate_limit_exceeded'}) + '\n').encode('utf-8'))
+                await writer.drain()
+                return
+            self._request_timestamps.append(now)
+
+            # 2. Enforce message size cap
+            try:
+                raw = await asyncio.wait_for(reader.readline(), timeout=5.0)
+            except (asyncio.LimitOverrunError, ValueError):
+                writer.write((json.dumps({'ok': False, 'error': 'payload_too_large'}) + '\n').encode('utf-8'))
+                await writer.drain()
+                return
             if not raw:
                 return
+            if len(raw) > self.MAX_MESSAGE_BYTES:
+                writer.write((json.dumps({'ok': False, 'error': 'payload_too_large'}) + '\n').encode('utf-8'))
+                await writer.drain()
+                return
+
             req = json.loads(raw.decode('utf-8'))
             action = req.get('action', 'synth')
             if action == 'ping':
@@ -462,7 +487,9 @@ class AsyncSynthServer:
                 os.unlink(self.socket_path)
             except OSError:
                 pass
-        self._server = await asyncio.start_unix_server(self._handle_client, path=self.socket_path)
+        self._server = await asyncio.start_unix_server(
+            self._handle_client, path=self.socket_path, limit=self.MAX_MESSAGE_BYTES + 4096
+        )
         try:
             os.chmod(self.socket_path, 0o600)
         except OSError:

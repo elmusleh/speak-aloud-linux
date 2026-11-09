@@ -216,6 +216,25 @@ def capture_region_with_qt(output_png: str) -> bool:
     return overlay.captured and os.path.isfile(output_png) and os.path.getsize(output_png) > 0
 
 
+def capture_region_with_wayland(output_png: str) -> bool:
+    """Capture screen region using native Wayland tools (`slurp` + `grim`)."""
+    is_wayland = (
+        os.environ.get('XDG_SESSION_TYPE', '').lower() == 'wayland'
+        or 'WAYLAND_DISPLAY' in os.environ
+    )
+    if is_wayland and shutil.which('slurp') and shutil.which('grim'):
+        try:
+            slurp_proc = subprocess.run(['slurp'], capture_output=True, text=True, timeout=30, check=False)
+            if slurp_proc.returncode == 0 and slurp_proc.stdout.strip():
+                geom = slurp_proc.stdout.strip()
+                grim_proc = subprocess.run(['grim', '-g', geom, output_png], timeout=15, check=False)
+                if grim_proc.returncode == 0 and os.path.isfile(output_png) and os.path.getsize(output_png) > 0:
+                    return True
+        except Exception:
+            pass
+    return False
+
+
 def capture_region_with_cli(output_png: str) -> bool:
     """Fallback CLI region screenshot tools (`maim`, `gnome-screenshot`, `scrot`)."""
     commands = [
@@ -237,17 +256,27 @@ def capture_region_with_cli(output_png: str) -> bool:
 def capture_and_ocr(image_path: str = '') -> str:
     """Capture a screen region (or use `image_path`) and return OCR text."""
     if image_path:
-        return extract_text_from_image(image_path)
+        raw = extract_text_from_image(image_path)
+        try:
+            from tts_text_processor import restore_punctuation_for_ocr
+            return restore_punctuation_for_ocr(raw)
+        except Exception:
+            return raw
 
     rdir = get_runtime_dir()
     fd, tmp_png = tempfile.mkstemp(prefix='ocr_', suffix='.png', dir=rdir)
     os.close(fd)
     try:
         os.unlink(tmp_png)
-        ok = capture_region_with_qt(tmp_png) or capture_region_with_cli(tmp_png)
+        ok = capture_region_with_wayland(tmp_png) or capture_region_with_qt(tmp_png) or capture_region_with_cli(tmp_png)
         if not ok or not os.path.isfile(tmp_png):
             return ''
-        return extract_text_from_image(tmp_png)
+        text = extract_text_from_image(tmp_png)
+        try:
+            from tts_text_processor import restore_punctuation_for_ocr
+            return restore_punctuation_for_ocr(text)
+        except Exception:
+            return text
     finally:
         if os.path.exists(tmp_png):
             try:
