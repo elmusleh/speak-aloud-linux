@@ -44,7 +44,9 @@ from tts_text_processor import (
     CONFIG_DIR,
     TTSSettingsStore,
     atomic_write_text,
+    get_analytics_summary,
     get_sanitized_env,
+    import_community_lexicon,
     load_lexicon,
     save_lexicon,
 )
@@ -125,6 +127,7 @@ class TTSSettingsWindow(QDialog):
         self.tabs.addTab(self._build_voices_tab(), 'Voices && Speed')
         self.tabs.addTab(self._build_player_filter_tab(), 'Floating HUD && Text Filter')
         self.tabs.addTab(self._build_translate_bench_tab(), 'Translation && Test Bench')
+        self.tabs.addTab(self._build_analytics_tab(), 'Analytics && Productivity')
         root.addWidget(self.tabs, 1)
 
         # Bottom Action Row
@@ -365,6 +368,15 @@ class TTSSettingsWindow(QDialog):
         self.chk_duck_audio = QCheckBox('Automatically duck background audio (Spotify, Firefox) while speaking')
         layout.addWidget(self.chk_duck_audio)
 
+        self.chk_crossfade = QCheckBox('Smooth inter-segment crossfade & gapless playback transitions')
+        layout.addWidget(self.chk_crossfade)
+
+        self.chk_auto_pause_bt = QCheckBox('Auto-pause playback when Bluetooth headphones disconnect (rewind 3s on reconnect)')
+        layout.addWidget(self.chk_auto_pause_bt)
+
+        self.chk_encrypt_cache = QCheckBox('Encrypt audio cache at rest (AES-256 via Keyring / Fernet)')
+        layout.addWidget(self.chk_encrypt_cache)
+
         theme_row = QHBoxLayout()
         theme_lbl = QLabel('HUD Theme:')
         theme_lbl.setStyleSheet('font-size: 11px; font-weight: 500;')
@@ -421,10 +433,14 @@ class TTSSettingsWindow(QDialog):
         btn_add_to_lexicon = QPushButton('Add to Lexicon')
         btn_add_to_lexicon.setObjectName('secondaryBtn')
         btn_add_to_lexicon.clicked.connect(self._add_to_lexicon)
+        btn_import_lex = QPushButton('Import Dev Lexicon')
+        btn_import_lex.setObjectName('secondaryBtn')
+        btn_import_lex.clicked.connect(self._import_dev_lexicon)
         lex_test_box.addWidget(self.ed_lex_word)
         lex_test_box.addWidget(self.ed_lex_alias)
         lex_test_box.addWidget(btn_test_pronounce)
         lex_test_box.addWidget(btn_add_to_lexicon)
+        lex_test_box.addWidget(btn_import_lex)
         layout.addLayout(lex_test_box)
 
         # Obsidian Vault Integration for Bookmarks
@@ -610,6 +626,9 @@ class TTSSettingsWindow(QDialog):
         self.chk_show_player.setChecked(read_bool_cfg('show_hud', read_bool_cfg('show_floating_player', True)))
         self.chk_enable_replay.setChecked(read_bool_cfg('replay_at_end', read_bool_cfg('enable_replay', True)))
         self.chk_duck_audio.setChecked(read_bool_cfg('duck_background_audio', False))
+        self.chk_crossfade.setChecked(read_bool_cfg('crossfade_audio', True))
+        self.chk_auto_pause_bt.setChecked(read_bool_cfg('auto_pause_bluetooth', True))
+        self.chk_encrypt_cache.setChecked(read_bool_cfg('encrypt_audio_cache', False))
         theme_val = read_cfg('ui_theme', 'auto').strip().lower()
         if theme_val not in ('auto', 'dark', 'light'):
             theme_val = 'auto'
@@ -642,6 +661,9 @@ class TTSSettingsWindow(QDialog):
         show_hud = 'yes' if self.chk_show_player.isChecked() else 'no'
         replay = 'yes' if self.chk_enable_replay.isChecked() else 'no'
         duck_bg = 'yes' if self.chk_duck_audio.isChecked() else 'no'
+        crossfade = 'yes' if self.chk_crossfade.isChecked() else 'no'
+        pause_bt = 'yes' if self.chk_auto_pause_bt.isChecked() else 'no'
+        encrypt_c = 'yes' if self.chk_encrypt_cache.isChecked() else 'no'
         ui_theme = self.cb_theme.currentData() or 'auto'
         pitch_val = f'{self.sl_pitch.value():+d}Hz'
         obs_vault = self.ed_obs_vault.text().strip()
@@ -684,6 +706,9 @@ class TTSSettingsWindow(QDialog):
             'translate_from': src_lang,
             'translate_api_key': t_key,
             'duck_background_audio': duck_bg,
+            'crossfade_audio': crossfade,
+            'auto_pause_bluetooth': pause_bt,
+            'encrypt_audio_cache': encrypt_c,
             'ui_theme': ui_theme,
             'obsidian_vault': obs_vault,
         })
@@ -704,6 +729,9 @@ class TTSSettingsWindow(QDialog):
         write_cfg('ui_theme', ui_theme)
         write_cfg('pitch', pitch_val)
         write_cfg('obsidian_vault', obs_vault)
+        write_cfg('crossfade_audio', crossfade)
+        write_cfg('auto_pause_bluetooth', pause_bt)
+        write_cfg('encrypt_audio_cache', encrypt_c)
 
     def _verify_pronunciation(self):
         word = self.ed_lex_word.text().strip()
@@ -742,6 +770,69 @@ class TTSSettingsWindow(QDialog):
                     lex_map[k.strip()] = v.strip()
         if lex_map:
             save_lexicon(lex_map)
+
+    def _import_dev_lexicon(self):
+        added = import_community_lexicon()
+        lex = load_lexicon()
+        self.txt_lexicon.setPlainText('\n'.join(f'{k} = {v}' for k, v in sorted(lex.items())))
+        self._set_status(f"Imported {added} tech terms into custom lexicon.")
+
+    def _build_analytics_tab(self) -> QWidget:
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        layout.setSpacing(12)
+        layout.setContentsMargins(16, 16, 16, 16)
+
+        hdr = QLabel('Reading Analytics & Productivity Tracker')
+        hdr.setProperty('class', 'sectionHeader')
+        layout.addWidget(hdr)
+
+        self.stats_card = QFrame()
+        self.stats_card.setStyleSheet("""
+            QFrame {
+                background-color: #12141A;
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 8px;
+                padding: 14px;
+            }
+        """)
+        stats_layout = QVBoxLayout(self.stats_card)
+        stats_layout.setSpacing(8)
+
+        self.lbl_analytics_today = QLabel('Today: 0.0 minutes listened (0 words)')
+        self.lbl_analytics_today.setStyleSheet('font-size: 13px; font-weight: 600; color: #F3F4F6;')
+        stats_layout.addWidget(self.lbl_analytics_today)
+
+        self.lbl_analytics_week = QLabel('Past 7 Days: 0.0 minutes (0 words)')
+        self.lbl_analytics_week.setStyleSheet('font-size: 12px; color: #9CA3AF;')
+        stats_layout.addWidget(self.lbl_analytics_week)
+
+        self.lbl_analytics_saved = QLabel('Estimated Reading Time Saved: ~0.0 minutes')
+        self.lbl_analytics_saved.setStyleSheet('font-size: 12px; color: #34D399; font-weight: 500;')
+        stats_layout.addWidget(self.lbl_analytics_saved)
+
+        layout.addWidget(self.stats_card)
+
+        btn_refresh = QPushButton('Refresh Analytics')
+        btn_refresh.setObjectName('secondaryBtn')
+        btn_refresh.clicked.connect(self._refresh_analytics)
+        btn_row = QHBoxLayout()
+        btn_row.addWidget(btn_refresh)
+        btn_row.addStretch(1)
+        layout.addLayout(btn_row)
+
+        layout.addStretch(1)
+        self._refresh_analytics()
+        return w
+
+    def _refresh_analytics(self):
+        try:
+            data = get_analytics_summary()
+            self.lbl_analytics_today.setText(f"Today: {data['today_minutes']} minutes listened ({data['today_words']:,} words)")
+            self.lbl_analytics_week.setText(f"Past 7 Days: {data['week_minutes']} minutes ({data['week_words']:,} words)")
+            self.lbl_analytics_saved.setText(f"Estimated Reading Time Saved: ~{data['saved_minutes']} minutes (listening vs visual reading)")
+        except Exception:
+            pass
 
     def _on_save(self):
         self._save_all()

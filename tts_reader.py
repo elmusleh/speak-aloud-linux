@@ -21,6 +21,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -300,6 +301,151 @@ def enqueue_documents(docs: List[Dict[str, str]], source: str = 'reader') -> int
     return count
 
 
+def get_audio_duration_seconds(audio_path: str) -> float:
+    """Measure exact duration of an audio file using ffprobe."""
+    ffprobe = shutil.which('ffprobe')
+    if not ffprobe or not os.path.isfile(audio_path):
+        return 0.0
+    try:
+        res = subprocess.run(
+            [ffprobe, '-v', 'quiet', '-show_entries', 'format=duration', '-of', 'csv=p=0', audio_path],
+            capture_output=True, text=True, timeout=5.0
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            return float(res.stdout.strip())
+    except Exception:
+        pass
+    try:
+        sz = os.path.getsize(audio_path)
+        return round(sz / 16000.0, 2)
+    except Exception:
+        return 0.0
+
+
+def bundle_documents_to_audiobook(
+    docs: List[Dict[str, str]],
+    output_path: str,
+    book_title: Optional[str] = None,
+    voice: Optional[str] = None,
+    rate: Optional[str] = None,
+) -> bool:
+    """Synthesize and bundle multi-chapter documents into an MP3 or M4B audiobook with embedded chapter marks."""
+    ffmpeg = shutil.which('ffmpeg')
+    if not ffmpeg:
+        sys.stderr.write("Error: ffmpeg is required to bundle audiobooks.\n")
+        return False
+
+    out_abs = os.path.abspath(output_path)
+    os.makedirs(os.path.dirname(out_abs), exist_ok=True)
+    temp_dir = tempfile.mkdtemp(prefix='tts_bundle_')
+
+    try:
+        from tts_synth_worker import synthesize_segment_sync
+        from tts_text_processor import TTSSettingsStore, split_text_into_sentences
+
+        settings = TTSSettingsStore().load()
+        v = voice or settings.get('voice_en', 'en-US-JennyNeural')
+        r = rate or settings.get('rate_en', '+0%')
+
+        chapters_info: List[Dict[str, Any]] = []
+        concat_files: List[str] = []
+        current_time_ms = 0
+
+        title = book_title or (docs[0].get('title') if docs else 'Audiobook')
+
+        for idx, doc in enumerate(docs):
+            ch_title = doc.get('title') or f"Chapter {idx + 1}"
+            ch_text = doc.get('text', '').strip()
+            if not ch_text:
+                continue
+
+            sys.stderr.write(f"[{idx + 1}/{len(docs)}] Synthesizing '{ch_title[:40]}'...\n")
+            ch_out = os.path.join(temp_dir, f"chapter_{idx:04d}.mp3")
+
+            sentences = split_text_into_sentences(ch_text)
+            if len(sentences) <= 1:
+                res = synthesize_segment_sync(ch_text, ch_out, voice=v, rate=r)
+                if not res.get('ok') or not os.path.isfile(ch_out):
+                    continue
+            else:
+                ch_parts = []
+                for s_i, sent in enumerate(sentences):
+                    s_path = os.path.join(temp_dir, f"ch_{idx:04d}_s{s_i:04d}.mp3")
+                    res = synthesize_segment_sync(sent, s_path, voice=v, rate=r)
+                    if res.get('ok') and os.path.isfile(s_path):
+                        ch_parts.append(s_path)
+                if not ch_parts:
+                    continue
+                part_list = os.path.join(temp_dir, f"ch_{idx:04d}_list.txt")
+                with open(part_list, 'w', encoding='utf-8') as plf:
+                    for cp in ch_parts:
+                        plf.write(f"file '{cp}'\n")
+                subprocess.run(
+                    [ffmpeg, '-y', '-f', 'concat', '-safe', '0', '-i', part_list, '-c', 'copy', ch_out],
+                    capture_output=True, timeout=60.0
+                )
+
+            dur_sec = get_audio_duration_seconds(ch_out)
+            dur_ms = int(dur_sec * 1000)
+            if dur_ms <= 0:
+                continue
+
+            chapters_info.append({
+                'title': ch_title,
+                'start_ms': current_time_ms,
+                'end_ms': current_time_ms + dur_ms,
+            })
+            current_time_ms += dur_ms
+            concat_files.append(ch_out)
+
+        if not concat_files:
+            sys.stderr.write("No audio chapters could be synthesized.\n")
+            return False
+
+        # Generate FFmpeg metadata file with chapters
+        meta_path = os.path.join(temp_dir, 'metadata.txt')
+        with open(meta_path, 'w', encoding='utf-8') as mf:
+            mf.write(";FFMETADATA1\n")
+            mf.write(f"title={title}\n")
+            mf.write("artist=Speak a Loud Universal\n")
+            mf.write("album=Speak a Loud Audiobooks\n\n")
+            for ch in chapters_info:
+                mf.write("[CHAPTER]\n")
+                mf.write("TIMEBASE=1/1000\n")
+                mf.write(f"START={ch['start_ms']}\n")
+                mf.write(f"END={ch['end_ms']}\n")
+                mf.write(f"title={ch['title']}\n\n")
+
+        # Concat list file
+        concat_list = os.path.join(temp_dir, 'concat.txt')
+        with open(concat_list, 'w', encoding='utf-8') as cf:
+            for cf_path in concat_files:
+                cf.write(f"file '{cf_path}'\n")
+
+        sys.stderr.write(f"Packaging {len(concat_files)} chapters into '{out_abs}'...\n")
+        if out_abs.lower().endswith('.m4b'):
+            cmd = [
+                ffmpeg, '-y', '-f', 'concat', '-safe', '0', '-i', concat_list,
+                '-i', meta_path, '-map_metadata', '1',
+                '-c:a', 'aac', '-b:a', '128k', out_abs
+            ]
+        else:
+            cmd = [
+                ffmpeg, '-y', '-f', 'concat', '-safe', '0', '-i', concat_list,
+                '-i', meta_path, '-map_metadata', '1',
+                '-c', 'copy', out_abs
+            ]
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=120.0)
+        if res.returncode == 0 and os.path.isfile(out_abs):
+            sys.stderr.write(f"Successfully packaged audiobook ({round(current_time_ms/60000.0, 1)} min): {out_abs}\n")
+            return True
+        else:
+            sys.stderr.write(f"FFmpeg error: {res.stderr}\n")
+            return False
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description='Speak a Loud Document & Web Article Reader')
     parser.add_argument('--file', help='Path to PDF or EPUB document')
@@ -307,6 +453,7 @@ def main():
     parser.add_argument('--url', help='Webpage URL to extract and read')
     parser.add_argument('--queue', '-q', action='store_true', help='Enqueue extracted items instead of printing')
     parser.add_argument('--speak', action='store_true', help='Trigger speak.sh on the extracted text')
+    parser.add_argument('--bundle', metavar='OUTPUT_FILE', help='Package all extracted chapters into a single MP3 or M4B audiobook')
     parser.add_argument('--resume', action='store_true', default=True, help='Resume from last saved reading position')
     parser.add_argument('--reset', action='store_true', help='Reset reading progress and start from chapter 1')
 
@@ -349,6 +496,11 @@ def main():
     if not docs:
         sys.stderr.write('No readable text content could be extracted.\n')
         sys.exit(1)
+
+    if args.bundle:
+        b_title = docs[0].get('title', 'Audiobook') if docs else 'Audiobook'
+        ok = bundle_documents_to_audiobook(docs, output_path=args.bundle, book_title=b_title)
+        sys.exit(0 if ok else 1)
 
     if args.queue:
         added = enqueue_documents(docs, source='file' if args.file else 'web')

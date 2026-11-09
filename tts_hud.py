@@ -1221,6 +1221,8 @@ class MPVTimelineController:
             f'--playlist-start={start_seg}',
             f'--start=+{start_offset:.2f}',
             '--no-terminal',
+            '--gapless-audio=yes',
+            '--audio-buffer=0.2',
             f'--speed={self.speed}',
             f'--input-ipc-server={MPV_SOCKET}',
         ]

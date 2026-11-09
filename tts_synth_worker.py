@@ -29,11 +29,15 @@ if SCRIPT_DIR not in sys.path:
 from tts_text_processor import (
     CONFIG_DIR,
     _format_rate_str,
+    decrypt_audio_data,
+    encrypt_audio_data,
     ensure_runtime_symlinks,
     format_pitch_str,
     get_audio_cache_path,
     get_sanitized_env,
     get_synth_socket_path,
+    has_ssml_tags,
+    read_bool_config,
 )
 
 
@@ -212,7 +216,15 @@ async def synthesize_segment_async(
         cpath = get_audio_cache_path(text, norm_voice, norm_rate, norm_pitch)
         if os.path.isfile(cpath) and os.path.getsize(cpath) > 128:
             try:
-                shutil.copyfile(cpath, output_path)
+                with open(cpath, 'rb') as cf:
+                    cached_bytes = cf.read()
+                if cached_bytes.startswith(b'gAAAAA'):
+                    try:
+                        cached_bytes = decrypt_audio_data(cached_bytes)
+                    except Exception:
+                        pass
+                with open(output_path, 'wb') as out_f:
+                    out_f.write(cached_bytes)
                 cwords = os.path.splitext(cpath)[0] + '.words.json'
                 words_cnt = 0
                 if os.path.isfile(cwords):
@@ -241,8 +253,13 @@ async def synthesize_segment_async(
             fd, tmp_out = tempfile.mkstemp(prefix='.edge_', suffix='.mp3', dir=parent)
             os.close(fd)
             try:
+                speech_text = text
+                if has_ssml_tags(text):
+                    s_clean = text.strip()
+                    if not s_clean.startswith('<speak'):
+                        speech_text = f'<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="en-US">{text}</speak>'
                 comm = edge_tts.Communicate(
-                    text=text,
+                    text=speech_text,
                     voice=norm_voice,
                     rate=norm_rate,
                     pitch=norm_pitch,
@@ -276,7 +293,14 @@ async def synthesize_segment_async(
                     if use_cache:
                         try:
                             cpath = get_audio_cache_path(text, norm_voice, norm_rate, norm_pitch)
-                            shutil.copyfile(output_path, cpath)
+                            if read_bool_config('encrypt_audio_cache', False):
+                                with open(output_path, 'rb') as src_f:
+                                    raw_audio = src_f.read()
+                                enc_audio = encrypt_audio_data(raw_audio)
+                                with open(cpath, 'wb') as dst_f:
+                                    dst_f.write(enc_audio)
+                            else:
+                                shutil.copyfile(output_path, cpath)
                             words_path = os.path.splitext(output_path)[0] + '.words.json'
                             if os.path.isfile(words_path):
                                 shutil.copyfile(words_path, os.path.splitext(cpath)[0] + '.words.json')
@@ -302,11 +326,12 @@ async def synthesize_segment_async(
                 await asyncio.sleep(0.35)
 
     # Fallback to local offline Piper neural TTS if available
+    plain_text = re.sub(r'<[^>]+>', ' ', text) if has_ssml_tags(text) else text
     loop = asyncio.get_running_loop()
     piper_ok = await loop.run_in_executor(
         None,
         synthesize_with_piper,
-        text,
+        plain_text,
         output_path,
         lang,
         piper_model,
@@ -332,6 +357,33 @@ async def synthesize_segment_async(
         }
 
     return {'ok': False, 'error': last_err or 'synthesis_failed'}
+
+
+def synthesize_segment_sync(
+    text: str,
+    output_path: str,
+    voice: Optional[str] = None,
+    rate: Optional[str] = None,
+    pitch: Optional[str] = None,
+    lang: str = 'en',
+    piper_model: Optional[str] = None,
+    use_cache: bool = True,
+    retries: int = 2,
+) -> Dict[str, Any]:
+    """Synchronous convenience wrapper around synthesize_segment_async."""
+    return asyncio.run(
+        synthesize_segment_async(
+            text=text,
+            output_path=output_path,
+            voice=voice,
+            rate=rate,
+            pitch=pitch,
+            lang=lang,
+            piper_model=piper_model,
+            use_cache=use_cache,
+            retries=retries,
+        )
+    )
 
 
 class AsyncSynthServer:

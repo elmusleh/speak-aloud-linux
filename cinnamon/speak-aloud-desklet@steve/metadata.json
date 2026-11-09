@@ -1,0 +1,8 @@
+{
+    "uuid": "speak-aloud-desklet@steve",
+    "name": "Speak a Loud Ambient Desklet",
+    "description": "Displays live TTS playback progress, current quote, and scrubber controls directly on your desktop wallpaper.",
+    "icon": "audio-volume-high",
+    "version": "1.0",
+    "cinnamon-version": ["5.4", "5.6", "5.8", "6.0", "6.2", "6.4", "6.6"]
+}

@@ -30,6 +30,24 @@ SETTINGS_JSON_PATH = os.path.join(CONFIG_DIR, 'settings.json')
 LEXICON_JSON_PATH = os.path.join(CONFIG_DIR, 'lexicon.json')
 AUDIO_CACHE_DIR = os.path.expanduser('~/.cache/speak-aloud/audio')
 READING_STATE_PATH = os.path.expanduser('~/.local/share/speak-aloud/reading_state.json')
+STATS_JSON_PATH = os.path.expanduser('~/.local/share/speak-aloud/stats.json')
+CACHE_KEY_PATH = os.path.join(CONFIG_DIR, '.cache_key')
+
+SSML_TAGS = {
+    'speak', 'emphasis', 'break', 'prosody', 'say-as',
+    'phoneme', 'sub', 'voice', 'lang', 'p', 's', 'mstts:express-as'
+}
+SSML_TAG_PATTERN = re.compile(
+    r'</?(?:speak|emphasis|break|prosody|say-as|phoneme|sub|voice|lang|mstts:express-as)(?:\s+[^>]*)?>',
+    re.IGNORECASE
+)
+
+
+def has_ssml_tags(text: str) -> bool:
+    """Return True if text contains recognized SSML markup tags."""
+    if not text:
+        return False
+    return bool(SSML_TAG_PATTERN.search(text))
 
 
 def get_runtime_dir() -> str:
@@ -501,6 +519,254 @@ def apply_lexicon(text: str, lexicon: Optional[Dict[str, str]] = None, config_di
     return text
 
 
+COMMUNITY_LEXICON = {
+    'kubectl': 'kube control',
+    'k8s': 'kates',
+    'nginx': 'engine x',
+    'postgresql': 'post gress Q L',
+    'postgres': 'post gress',
+    'scikit-learn': 'sigh kit learn',
+    'sklearn': 'S K learn',
+    'pytorch': 'pie torch',
+    'cuda': 'koo duh',
+    'vllm': 'V L L M',
+    'gui': 'gooey',
+    'cli': 'C L I',
+    'api': 'A P I',
+    'sdk': 'S D K',
+    'jwt': 'jot',
+    'json': 'jay son',
+    'yaml': 'yamel',
+    'ci/cd': 'C I C D',
+    'pr': 'P R',
+    'repo': 'ree po',
+    'stdout': 'standard out',
+    'stderr': 'standard error',
+    'stdin': 'standard in',
+    'sysadmin': 'sys admin',
+    'regex': 'reg ex',
+    'uuid': 'U U I D',
+    'guid': 'goo id',
+    'sudo': 'sue due',
+    'chown': 'C H own',
+    'chmod': 'C H mod',
+    'tmux': 'tea mucks',
+    'vim': 'vim',
+    'neovim': 'neo vim',
+    'pyqt6': 'pie cute 6',
+    'pyside6': 'pie side 6',
+    'fastapi': 'fast A P I',
+    'django': 'jang go',
+    'celery': 'celery',
+    'redis': 'red iss',
+    'sqlite': 'sequel lite',
+    'mysql': 'my sequel',
+    'nosql': 'no sequel',
+    'graphql': 'graph Q L',
+    'oauth': 'O auth',
+    'wasm': 'wah zum',
+    'npm': 'N P M',
+    'pnpm': 'P N P M',
+    'pipx': 'pip X',
+    'venv': 'V env',
+    'dockerfile': 'docker file',
+    'kubernetes': 'koo ber net ees',
+}
+
+
+def import_community_lexicon(url_or_path: Optional[str] = None, config_dir: Optional[str] = None) -> int:
+    """Merge community developer pronunciations into lexicon.json."""
+    current = load_lexicon(config_dir=config_dir)
+    imported_dict: Dict[str, str] = dict(COMMUNITY_LEXICON)
+
+    if url_or_path:
+        url_s = url_or_path.strip()
+        if url_s.startswith(('http://', 'https://')):
+            import urllib.request
+            try:
+                req = urllib.request.Request(url_s, headers={'User-Agent': 'SpeakALoud-Lexicon-Importer'})
+                with urllib.request.urlopen(req, timeout=5.0) as resp:
+                    raw_text = resp.read().decode('utf-8', errors='replace')
+                # Try parsing as JSON first
+                try:
+                    parsed = json.loads(raw_text)
+                    if isinstance(parsed, dict):
+                        imported_dict.update({str(k): str(v) for k, v in parsed.items()})
+                except Exception:
+                    # Parse as line-separated "key = value"
+                    for line in raw_text.splitlines():
+                        if '=' in line:
+                            k, v = line.split('=', 1)
+                            if k.strip() and v.strip():
+                                imported_dict[k.strip()] = v.strip()
+            except Exception:
+                pass
+        elif os.path.isfile(url_s):
+            try:
+                with open(url_s, 'r', encoding='utf-8') as f:
+                    raw_text = f.read()
+                try:
+                    parsed = json.loads(raw_text)
+                    if isinstance(parsed, dict):
+                        imported_dict.update({str(k): str(v) for k, v in parsed.items()})
+                except Exception:
+                    for line in raw_text.splitlines():
+                        if '=' in line:
+                            k, v = line.split('=', 1)
+                            if k.strip() and v.strip():
+                                imported_dict[k.strip()] = v.strip()
+            except Exception:
+                pass
+
+    count_new = 0
+    for k, v in imported_dict.items():
+        if k not in current:
+            current[k] = v
+            count_new += 1
+
+    save_lexicon(current, config_dir=config_dir)
+    return count_new
+
+
+def get_or_create_cache_encryption_key() -> bytes:
+    """Retrieve or generate 32-byte Fernet key for encrypting audio cache at rest."""
+    import base64
+    # 1. Try keyring
+    keyring_key = None
+    if shutil.which('secret-tool'):
+        try:
+            res = subprocess.run(
+                ['secret-tool', 'lookup', 'application', 'speak-aloud', 'key', 'cache_encryption'],
+                capture_output=True, text=True, timeout=1.0
+            )
+            val = res.stdout.strip()
+            if val and len(val) >= 32:
+                keyring_key = val.encode('utf-8')
+        except Exception:
+            pass
+
+    if keyring_key:
+        return keyring_key
+
+    # 2. Check hidden local key file
+    if os.path.isfile(CACHE_KEY_PATH):
+        try:
+            with open(CACHE_KEY_PATH, 'rb') as f:
+                k = f.read().strip()
+            if len(k) >= 32:
+                return k
+        except OSError:
+            pass
+
+    # 3. Generate fresh Fernet key
+    from cryptography.fernet import Fernet
+    new_key = Fernet.generate_key()
+    os.makedirs(CONFIG_DIR, mode=0o700, exist_ok=True)
+    try:
+        with open(CACHE_KEY_PATH, 'wb') as f:
+            f.write(new_key)
+        os.chmod(CACHE_KEY_PATH, 0o600)
+    except OSError:
+        pass
+
+    # Save to keyring as well if available
+    if shutil.which('secret-tool'):
+        try:
+            subprocess.run(
+                ['secret-tool', 'store', '--label=Speak a Loud Cache Key', 'application', 'speak-aloud', 'key', 'cache_encryption'],
+                input=new_key.decode('utf-8') + '\n', text=True, timeout=1.5, stdout=subprocess.DEVNULL
+            )
+        except Exception:
+            pass
+
+    return new_key
+
+
+def encrypt_audio_data(data: bytes, key: Optional[bytes] = None) -> bytes:
+    """Encrypt raw audio bytes using Fernet authenticated symmetric encryption."""
+    from cryptography.fernet import Fernet
+    k = key or get_or_create_cache_encryption_key()
+    f = Fernet(k)
+    return f.encrypt(data)
+
+
+def decrypt_audio_data(data: bytes, key: Optional[bytes] = None) -> bytes:
+    """Decrypt Fernet-encrypted raw audio bytes."""
+    from cryptography.fernet import Fernet
+    k = key or get_or_create_cache_encryption_key()
+    f = Fernet(k)
+    return f.decrypt(data)
+
+
+def record_playback_activity(delta_seconds: float, words_count: int = 0, speed: float = 1.0) -> None:
+    """Record listening activity into ~/.local/share/speak-aloud/stats.json."""
+    if delta_seconds <= 0:
+        return
+    os.makedirs(os.path.dirname(STATS_JSON_PATH), mode=0o700, exist_ok=True)
+    today = time.strftime('%Y-%m-%d')
+    stats: Dict[str, Any] = {}
+    if os.path.isfile(STATS_JSON_PATH):
+        try:
+            with open(STATS_JSON_PATH, 'r', encoding='utf-8') as f:
+                stats = json.load(f)
+        except Exception:
+            stats = {}
+
+    day_entry = stats.get(today, {'seconds': 0.0, 'words': 0, 'sessions': 0, 'speed': speed})
+    day_entry['seconds'] = round(day_entry.get('seconds', 0.0) + delta_seconds, 1)
+    day_entry['words'] = day_entry.get('words', 0) + max(0, words_count)
+    day_entry['speed'] = round(speed, 2)
+    stats[today] = day_entry
+
+    tmp_p = f"{STATS_JSON_PATH}.tmp.{os.getpid()}"
+    try:
+        with open(tmp_p, 'w', encoding='utf-8') as f:
+            json.dump(stats, f, indent=2)
+        os.replace(tmp_p, STATS_JSON_PATH)
+    finally:
+        if os.path.exists(tmp_p):
+            try:
+                os.unlink(tmp_p)
+            except OSError:
+                pass
+
+
+def get_analytics_summary() -> Dict[str, Any]:
+    """Calculate daily and weekly listening metrics."""
+    today_str = time.strftime('%Y-%m-%d')
+    stats: Dict[str, Any] = {}
+    if os.path.isfile(STATS_JSON_PATH):
+        try:
+            with open(STATS_JSON_PATH, 'r', encoding='utf-8') as f:
+                stats = json.load(f)
+        except Exception:
+            pass
+
+    today_sec = stats.get(today_str, {}).get('seconds', 0.0)
+    today_words = stats.get(today_str, {}).get('words', 0)
+
+    # Calculate past 7 days
+    now = time.time()
+    week_sec = 0.0
+    total_words = 0
+    for day_offset in range(7):
+        ds = time.strftime('%Y-%m-%d', time.localtime(now - (day_offset * 86400)))
+        entry = stats.get(ds, {})
+        week_sec += entry.get('seconds', 0.0)
+        total_words += entry.get('words', 0)
+
+    # Average human visual reading speed is ~230 wpm; TTS at 1.5x saves ~35% time
+    saved_minutes = round((week_sec / 60.0) * 0.35, 1)
+
+    return {
+        'today_minutes': round(today_sec / 60.0, 1),
+        'today_words': today_words,
+        'week_minutes': round(week_sec / 60.0, 1),
+        'week_words': total_words,
+        'saved_minutes': saved_minutes,
+    }
+
+
 # ── Strict Schema Validation & Atomic Settings Store ──────────────────────────
 
 VALID_PROVIDERS = {'google', 'mymemory', 'libretranslate', 'deepl', 'openai'}
@@ -583,6 +849,10 @@ class TTSSettingsStore:
         'obsidian_vault': '',
         'obsidian_folder': 'Reading Notes',
         'sleep_timer_minutes': '0',
+        'encrypt_audio_cache': 'no',
+        'crossfade_audio': 'yes',
+        'crossfade_duration': '40',
+        'auto_pause_bluetooth': 'yes',
     }
 
     def __init__(self, config_dir: Optional[str] = None):
@@ -645,6 +915,10 @@ class TTSSettingsStore:
             'obsidian_vault': _sanitize_str(src.get('obsidian_vault'), 128, ''),
             'obsidian_folder': _sanitize_str(src.get('obsidian_folder'), 128, 'Reading Notes'),
             'sleep_timer_minutes': str(_parse_int_clamped(src.get('sleep_timer_minutes'), 0, 240, 0)),
+            'encrypt_audio_cache': _norm_yes_no(src.get('encrypt_audio_cache'), False),
+            'crossfade_audio': _norm_yes_no(src.get('crossfade_audio'), True),
+            'crossfade_duration': str(_parse_int_clamped(src.get('crossfade_duration'), 10, 200, 40)),
+            'auto_pause_bluetooth': _norm_yes_no(src.get('auto_pause_bluetooth'), True),
         }
         return validated
 
@@ -766,6 +1040,13 @@ COMMA_SPLIT_RE = re.compile(r'(?<=[,،])\s+')
 PUNCT_PAUSE_RE = re.compile(r'(?<=[,;:!?،؛؟。])\s+|(?<=\.)\s+(?!\d)')
 
 
+def split_text_into_sentences(text: str) -> List[str]:
+    """Split clean text into individual sentence strings."""
+    if not text:
+        return []
+    return [s.strip() for s in SENT_SPLIT_RE.split(text) if s.strip()]
+
+
 def to_bool(val: str, default: bool = False) -> bool:
     if val is None or val == '':
         return default
@@ -814,8 +1095,15 @@ def clean_and_filter_text(
         # Obsidian wikilinks [[target|label]] -> label, [[target]] -> target
         text = re.sub(r'\[\[([^\]|]+)\|([^\]]+)\]\]', r'\2', text)
         text = re.sub(r'\[\[([^\]]+)\]\]', r'\1', text)
-        # Strip standalone HTML tags (only actual HTML tags, not < comparison)
-        text = re.sub(r'</?[a-zA-Z][a-zA-Z0-9_-]*(?:\s+[^>]*)?>', ' ', text)
+        # Strip standalone HTML tags while preserving recognized SSML markup tags
+        def _strip_html_keep_ssml(m):
+            tag_str = m.group(0)
+            tag_match = re.match(r'</?([a-zA-Z0-9_:-]+)', tag_str)
+            if tag_match and tag_match.group(1).lower() in SSML_TAGS:
+                return tag_str
+            return ' '
+
+        text = re.sub(r'</?[a-zA-Z][a-zA-Z0-9_:-]*(?:\s+[^>]*)?>', _strip_html_keep_ssml, text)
         # Strip Markdown table separator lines
         text = re.sub(r'(?m)^\s*\|?[\s:-]+\|[\s|:-]*$', '', text)
         text = text.replace('|', ' , ')

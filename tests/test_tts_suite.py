@@ -619,5 +619,119 @@ def test_obsidian_vault_bookmark_sync(tmp_path, monkeypatch):
     assert 'Insights for personal knowledge base.' in content
 
 
+def test_ssml_preservation_and_markup_detection():
+    from tts_text_processor import has_ssml_tags, clean_and_filter_text
+
+    assert has_ssml_tags('<emphasis level="strong">Important</emphasis>')
+    assert has_ssml_tags('Take a pause <break time="400ms"/> here.')
+    assert has_ssml_tags('<prosody pitch="+5Hz">High voice</prosody>')
+    assert not has_ssml_tags('Plain text with no markup at all.')
+    assert not has_ssml_tags('5 < 10 and 20 > 15')
+
+    # Verify HTML stripping preserves SSML tags
+    sample = '<div class="banner"><emphasis level="strong">Critical</emphasis> <break time="250ms"/> warning</div>'
+    cleaned = clean_and_filter_text(sample)
+    assert '<emphasis level="strong">Critical</emphasis>' in cleaned
+    assert '<break time="250ms"/>' in cleaned
+    assert '<div' not in cleaned
+    assert '</div>' not in cleaned
+
+
+def test_community_lexicon_importer(tmp_path):
+    from tts_text_processor import import_community_lexicon, load_lexicon
+
+    cfg_dir = str(tmp_path / 'cfg')
+    os.makedirs(cfg_dir, exist_ok=True)
+
+    added = import_community_lexicon(config_dir=cfg_dir)
+    assert added > 30
+
+    lex = load_lexicon(config_dir=cfg_dir)
+    assert lex.get('kubectl') == 'kube control'
+    assert lex.get('nginx', '').lower() == 'engine x'
+    assert lex.get('pytorch') == 'pie torch'
+    assert lex.get('fastapi') == 'fast A P I'
+
+
+def test_audio_cache_encryption_roundtrip(tmp_path, monkeypatch):
+    from tts_text_processor import (
+        get_or_create_cache_encryption_key,
+        encrypt_audio_data,
+        decrypt_audio_data,
+    )
+
+    kfile = tmp_path / '.cache_key'
+    monkeypatch.setattr('tts_text_processor.CACHE_KEY_PATH', str(kfile))
+
+    raw_audio = b'ID3\x04\x00\x00\x00\x00\x00\x23FAKE_MP3_AUDIO_BYTES_TESTING_123'
+    key = get_or_create_cache_encryption_key()
+    assert len(key) == 44
+
+    encrypted = encrypt_audio_data(raw_audio, key=key)
+    assert encrypted != raw_audio
+    assert encrypted.startswith(b'gAAAAA')
+
+    decrypted = decrypt_audio_data(encrypted, key=key)
+    assert decrypted == raw_audio
+
+
+def test_reading_analytics_recording_and_summary(tmp_path, monkeypatch):
+    from tts_text_processor import record_playback_activity, get_analytics_summary
+
+    stats_file = tmp_path / 'stats.json'
+    monkeypatch.setattr('tts_text_processor.STATS_JSON_PATH', str(stats_file))
+
+    # Record 180 seconds at 1.5x speed with 600 words
+    record_playback_activity(180.0, words_count=600, speed=1.5)
+
+    summary = get_analytics_summary()
+    assert summary['today_minutes'] == 3.0
+    assert summary['today_words'] == 600
+    assert summary['week_minutes'] >= 3.0
+    assert summary['week_words'] >= 600
+    assert summary['saved_minutes'] > 0.5
+
+
+def test_audiobook_bundler_and_duration_measurement(tmp_path, monkeypatch):
+    from tts_reader import get_audio_duration_seconds, bundle_documents_to_audiobook
+
+    # Create dummy mp3 file
+    mp3_file = tmp_path / 'dummy.mp3'
+    mp3_file.write_bytes(b'A' * 32000)
+
+    dur = get_audio_duration_seconds(str(mp3_file))
+    assert dur > 0.0
+
+    docs = [
+        {'title': 'Chapter 1: The Beginning', 'text': 'Once upon a time in software engineering.'},
+        {'title': 'Chapter 2: The Breakthrough', 'text': 'Async architectures transformed the industry.'},
+    ]
+
+    out_book = tmp_path / 'audiobook.mp3'
+
+    # Generate a real valid 1-second silent MP3 sample for ffmpeg concatenation
+    valid_sample = tmp_path / 'sample.mp3'
+    import subprocess
+    subprocess.run(
+        ['ffmpeg', '-y', '-f', 'lavfi', '-i', 'anullsrc=r=24000:cl=mono', '-t', '1', '-q:a', '9', '-acodec', 'libmp3lame', str(valid_sample)],
+        capture_output=True, check=True
+    )
+    valid_mp3_bytes = valid_sample.read_bytes()
+
+    # Mock synthesize_segment_sync to produce valid mp3 audio
+    def fake_synth(text, output_path, **kwargs):
+        with open(output_path, 'wb') as f:
+            f.write(valid_mp3_bytes)
+        return {'ok': True, 'engine': 'test'}
+
+    monkeypatch.setattr('tts_synth_worker.synthesize_segment_sync', fake_synth)
+
+    ok = bundle_documents_to_audiobook(docs, output_path=str(out_book), book_title='Unit Test Book')
+    assert ok is True
+    assert out_book.exists()
+    assert out_book.stat().st_size > 500
+
+
+
 
 

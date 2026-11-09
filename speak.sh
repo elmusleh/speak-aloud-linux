@@ -57,6 +57,7 @@ OCR_IMAGE=""
 FILE_INPUT=""
 PAGE_INPUT=""
 URL_INPUT=""
+BUNDLE_OUTPUT=""
 OVERRIDE_EN_VOICE=""
 OVERRIDE_AR_VOICE=""
 OVERRIDE_DE_VOICE=""
@@ -116,6 +117,7 @@ while [[ $# -gt 0 ]]; do
         --file)               FILE_INPUT="$2";                 shift 2 ;;
         --page)               PAGE_INPUT="$2";                 shift 2 ;;
         --url)                URL_INPUT="$2";                  shift 2 ;;
+        --bundle)             BUNDLE_OUTPUT="$2";              shift 2 ;;
         --ocr)                OCR_MODE="yes";                  shift 1 ;;
         --ocr-image)          OCR_MODE="yes"; OCR_IMAGE="$2";  shift 2 ;;
         --queue|-q)           TTS_MODE="queue";                shift 1 ;;
@@ -139,6 +141,18 @@ while [[ $# -gt 0 ]]; do
         *)                    shift ;;
     esac
 done
+
+if [ -n "$BUNDLE_OUTPUT" ]; then
+    declare -a bundle_src=()
+    if [ -n "$FILE_INPUT" ]; then
+        bundle_src=(--file "$FILE_INPUT")
+        [ -n "$PAGE_INPUT" ] && bundle_src+=(--page "$PAGE_INPUT")
+    elif [ -n "$URL_INPUT" ]; then
+        bundle_src=(--url "$URL_INPUT")
+    fi
+    python3 "$SCRIPT_DIR/tts_reader.py" "${bundle_src[@]}" --bundle "$BUNDLE_OUTPUT"
+    exit $?
+fi
 
 if [ -n "$URL_INPUT" ] && [ -z "$OVERRIDE_TEXT" ]; then
     if [ "$TTS_MODE" = "queue" ]; then
@@ -765,7 +779,7 @@ if [ "$TTS_MODE" = "play" ]; then
     fi
 
     debug "Starting mpv on $FIRST_FILE (seg_$CURRENT_IDX, speed=$INITIAL_SPEED)"
-    mpv "$FIRST_FILE" --no-terminal --idle --speed="$INITIAL_SPEED" --input-ipc-server="$MPV_SOCKET" 200>&- &
+    mpv "$FIRST_FILE" --no-terminal --idle --gapless-audio=yes --audio-buffer=0.2 --speed="$INITIAL_SPEED" --input-ipc-server="$MPV_SOCKET" 200>&- &
     MPV_PID=$!
 
     # ── Background: append remaining segments in order via IPC ──────────────

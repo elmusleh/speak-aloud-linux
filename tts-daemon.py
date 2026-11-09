@@ -41,6 +41,7 @@ from tts_text_processor import (
     prune_audio_cache,
     prune_runtime_dir,
     read_bool_config,
+    record_playback_activity,
 )
 from tts_synth_worker import start_synth_server_thread
 from tts_ducking import AudioDucker
@@ -338,6 +339,12 @@ class QtTTSDaemon:
         except Exception:
             pass
 
+        # Reading Analytics activity accumulator & Bluetooth disconnect monitor
+        self._playing_accum_sec = 0.0
+        self._prev_sink_is_bt = None
+        self._paused_by_bluetooth = False
+        self._last_bt_check = 0.0
+
         if PYNPUT_AVAILABLE:
             self.log.debug('pynput available for media keys')
             self._x11_listener = None
@@ -498,11 +505,30 @@ class QtTTSDaemon:
             elif prev_state == 'PLAYING' and state in ('IDLE', 'PAUSED'):
                 self.ducker.unduck()
 
+        # Reading Analytics activity tracking
+        if state == 'PLAYING':
+            self._playing_accum_sec += 0.15
+            if self._playing_accum_sec >= 10.0:
+                spd = float(getattr(self.controller, 'speed', 1.0) or 1.0)
+                words = int(self._playing_accum_sec * (230.0 / 60.0) * spd)
+                record_playback_activity(self._playing_accum_sec, words, spd)
+                self._playing_accum_sec = 0.0
+        elif prev_state == 'PLAYING' and self._playing_accum_sec > 0.0:
+            spd = float(getattr(self.controller, 'speed', 1.0) or 1.0)
+            words = int(self._playing_accum_sec * (230.0 / 60.0) * spd)
+            record_playback_activity(self._playing_accum_sec, words, spd)
+            self._playing_accum_sec = 0.0
+
+        # Bluetooth headphone monitoring (every 1 second)
+        now = time.time()
+        if now - getattr(self, '_last_bt_check', 0.0) >= 1.0:
+            self._last_bt_check = now
+            self._check_bluetooth_audio()
+
         # Update Floating Player HUD & Queue Manager
         self.player_window.update_from_state(state)
 
         # Periodic cache & tmpfs garbage collection (every 6 hours)
-        now = time.time()
         if now - getattr(self, '_last_prune_time', 0.0) > 21600:
             self._last_prune_time = now
             try:
@@ -510,6 +536,48 @@ class QtTTSDaemon:
                 prune_runtime_dir(max_age_hours=24)
             except Exception:
                 pass
+
+    def _check_bluetooth_audio(self):
+        if not read_bool_config('auto_pause_bluetooth', True):
+            return
+        pactl = shutil.which('pactl')
+        if not pactl:
+            return
+        try:
+            res = subprocess.run([pactl, 'get-default-sink'], capture_output=True, text=True, timeout=0.4)
+            if res.returncode != 0:
+                return
+            cur_sink = res.stdout.strip().lower()
+            is_bt = 'bluez' in cur_sink
+
+            if self._prev_sink_is_bt is None:
+                self._prev_sink_is_bt = is_bt
+                return
+
+            if self._prev_sink_is_bt and not is_bt:
+                # Bluetooth disconnected while playing
+                if self._state == 'PLAYING':
+                    self.log.info('Bluetooth audio disconnected — auto-pausing playback')
+                    self._paused_by_bluetooth = True
+                    self._on_pause()
+                    subprocess.run(
+                        ['notify-send', '-a', 'Speak a Loud', '-u', 'normal', 'Headphones Disconnected', 'Speech playback paused automatically.'],
+                        timeout=1.0, check=False
+                    )
+            elif not self._prev_sink_is_bt and is_bt:
+                # Bluetooth reconnected
+                if getattr(self, '_paused_by_bluetooth', False):
+                    self.log.info('Bluetooth audio reconnected — rewinding 3s and resuming')
+                    self._paused_by_bluetooth = False
+                    self.controller.seek_relative(-3.0)
+                    self._on_pause()
+                    subprocess.run(
+                        ['notify-send', '-a', 'Speak a Loud', '-u', 'normal', 'Headphones Reconnected', 'Resuming playback (rewound 3 seconds).'],
+                        timeout=1.0, check=False
+                    )
+            self._prev_sink_is_bt = is_bt
+        except Exception as exc:
+            self.log.debug('Bluetooth sink monitor error: %s', exc)
 
     def _on_portal_setting_changed(self, namespace, key, value):
         try:
@@ -613,6 +681,14 @@ class QtTTSDaemon:
 
     def _on_quit(self):
         self.log.info('Quit requested')
+        if getattr(self, '_playing_accum_sec', 0.0) > 0.0:
+            try:
+                spd = float(getattr(self.controller, 'speed', 1.0) or 1.0)
+                words = int(self._playing_accum_sec * (230.0 / 60.0) * spd)
+                record_playback_activity(self._playing_accum_sec, words, spd)
+                self._playing_accum_sec = 0.0
+            except Exception:
+                pass
         self.timer.stop()
         self._stop_keys()
         if getattr(self, '_x11_listener', None) is not None:
