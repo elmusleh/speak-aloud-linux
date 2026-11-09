@@ -1104,6 +1104,124 @@ def test_calibre_extraction_handling():
     assert isinstance(res, list)
 
 
+def test_popup_buttons_schema_and_presets(tmp_path, monkeypatch):
+    from tts_text_processor import TTSSettingsStore
+    from PyQt6.QtWidgets import QApplication
+    _app = QApplication.instance() or QApplication([])
+
+    cfg_dir = tmp_path / 'cfg'
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    store = TTSSettingsStore(str(cfg_dir))
+
+    # 1. Defaults verification
+    defaults = store.load()
+    assert defaults['hud_btn_speed'] == 'yes'
+    assert defaults['hud_btn_stop'] == 'yes'
+    assert defaults['hud_btn_ocr'] == 'yes'
+    assert defaults['hud_btn_anki'] == 'yes'
+    assert defaults['hud_expand_tools_drawer'] == 'no'
+
+    # 2. Validation normalization
+    val = store.validate({
+        'hud_btn_speed': 'FALSE',
+        'hud_btn_ocr': 'no',
+        'hud_expand_tools_drawer': '1',
+    })
+    assert val['hud_btn_speed'] == 'no'
+    assert val['hud_btn_ocr'] == 'no'
+    assert val['hud_expand_tools_drawer'] == 'yes'
+
+    # 3. Settings Studio Presets
+    import importlib
+    tts_settings_mod = importlib.import_module('tts-settings')
+    win = tts_settings_mod.TTSSettingsWindow()
+
+    # Minimal Preset
+    win._apply_button_preset('minimal')
+    assert win.chk_btn_speed.isChecked() is True
+    assert win.chk_btn_stop.isChecked() is True
+    assert win.chk_btn_ocr.isChecked() is False
+    assert win.chk_btn_anki.isChecked() is False
+    assert win.chk_btn_more.isChecked() is False
+
+    # Reader Preset
+    win._apply_button_preset('reader')
+    assert win.chk_btn_transcript.isChecked() is True
+    assert win.chk_btn_bookmark.isChecked() is True
+    assert win.chk_btn_sleep.isChecked() is True
+    assert win.chk_btn_ocr.isChecked() is False
+
+    # All Preset
+    win._apply_button_preset('all')
+    assert win.chk_btn_ocr.isChecked() is True
+    assert win.chk_btn_anki.isChecked() is True
+    assert win.chk_btn_more.isChecked() is True
+
+
+def test_floating_player_button_visibility_apply(tmp_path, monkeypatch):
+    from PyQt6.QtWidgets import QApplication
+    _app = QApplication.instance() or QApplication([])
+    from tts_hud import FloatingPlayerWindow, MPVTimelineController, QueueManagerWindow
+
+    monkeypatch.setattr('tts_hud.MPV_SOCKET', str(tmp_path / 'nonexistent.sock'))
+    monkeypatch.setattr('tts_hud.WORK_DIR', str(tmp_path / 'work'))
+
+    ctrl = MPVTimelineController()
+    qwin = QueueManagerWindow()
+    player = FloatingPlayerWindow(ctrl, qwin)
+    player.show()
+
+    # 1. Custom button hide test: disable speed pill, stop button, OCR, and Anki
+    player.apply_button_settings({
+        'hud_btn_speed': 'no',
+        'hud_btn_stop': 'no',
+        'hud_btn_ocr': 'no',
+        'hud_btn_anki': 'no',
+        'hud_expand_tools_drawer': 'no',
+    })
+    assert player.btn_speed.isVisible() is False
+    assert player.btn_stop.isVisible() is False
+    assert player.btn_ocr.isHidden() is True
+    assert player.btn_anki.isHidden() is True
+    # Other tools should still be enabled (not hidden) in drawer
+    assert player.btn_transcript.isHidden() is False
+    assert player.btn_more.isVisible() is True
+
+    # Open drawer and verify transcript is visible while OCR and Anki remain hidden
+    player._toggle_tools_drawer()
+    assert player.tools_box.isVisible() is True
+    assert player.btn_transcript.isVisible() is True
+    assert player.btn_ocr.isVisible() is False
+    assert player.btn_anki.isVisible() is False
+
+    # 2. Disable ALL drawer tools: verify btn_more auto-hides
+    player.apply_button_settings({
+        'hud_btn_more': 'yes',
+        'hud_btn_enqueue': 'no',
+        'hud_btn_transcript': 'no',
+        'hud_btn_queue': 'no',
+        'hud_btn_ocr': 'no',
+        'hud_btn_save': 'no',
+        'hud_btn_bookmark': 'no',
+        'hud_btn_anki': 'no',
+        'hud_btn_sleep': 'no',
+        'hud_btn_settings': 'no',
+    })
+    assert player.btn_more.isVisible() is False
+    assert player.tools_box.isVisible() is False
+
+    # 3. Auto-expand drawer when configured
+    player.apply_button_settings({
+        'hud_btn_transcript': 'yes',
+        'hud_btn_more': 'yes',
+        'hud_expand_tools_drawer': 'yes',
+    })
+    assert player.btn_more.isVisible() is True
+    assert player.tools_box.isVisible() is True
+    player.hide()
+
+
+
 
 
 

@@ -2144,6 +2144,87 @@ class FloatingPlayerWindow(QWidget):
 
         outer.addWidget(self.deck)
         self.apply_theme()
+        self.apply_button_settings()
+
+    def apply_button_settings(self, st: Optional[dict] = None):
+        """Show/hide individual HUD and drawer buttons according to user settings."""
+        if st is None:
+            try:
+                st = TTSSettingsStore().load()
+            except Exception:
+                st = {}
+
+        # Primary / Essential Row Controls
+        if hasattr(self, 'btn_speed'):
+            self.btn_speed.setVisible(st.get('hud_btn_speed', 'yes') == 'yes')
+        if hasattr(self, 'lbl_mode_tag'):
+            self.lbl_mode_tag.setVisible(st.get('hud_btn_mode_tag', 'yes') == 'yes')
+        if hasattr(self, 'btn_close'):
+            self.btn_close.setVisible(st.get('hud_btn_close', 'yes') == 'yes')
+        if hasattr(self, 'btn_back'):
+            self.btn_back.setVisible(st.get('hud_btn_back', 'yes') == 'yes')
+        if hasattr(self, 'btn_play_pause'):
+            self.btn_play_pause.setVisible(st.get('hud_btn_play_pause', 'yes') == 'yes')
+        if hasattr(self, 'btn_fwd'):
+            self.btn_fwd.setVisible(st.get('hud_btn_fwd', 'yes') == 'yes')
+        if hasattr(self, 'btn_stop'):
+            self.btn_stop.setVisible(st.get('hud_btn_stop', 'yes') == 'yes')
+
+        # Scrubber / Timeline Row
+        show_prog = (st.get('hud_show_progress', 'yes') == 'yes')
+        if hasattr(self, 'lbl_current'):
+            self.lbl_current.setVisible(show_prog)
+        if hasattr(self, 'slider'):
+            self.slider.setVisible(show_prog)
+        if hasattr(self, 'lbl_duration'):
+            self.lbl_duration.setVisible(show_prog)
+
+        # Chunk progress strip
+        self._cfg_show_chunks = (st.get('hud_show_chunks', 'yes') == 'yes')
+        if hasattr(self, 'chunk_box'):
+            if not self._cfg_show_chunks:
+                self.chunk_box.setVisible(False)
+
+        # More Tools Drawer Buttons
+        drawer_buttons = [
+            (getattr(self, 'btn_enqueue', None), st.get('hud_btn_enqueue', 'yes') == 'yes'),
+            (getattr(self, 'btn_transcript', None), st.get('hud_btn_transcript', 'yes') == 'yes'),
+            (getattr(self, 'btn_queue', None), st.get('hud_btn_queue', 'yes') == 'yes'),
+            (getattr(self, 'btn_ocr', None), st.get('hud_btn_ocr', 'yes') == 'yes'),
+            (getattr(self, 'btn_save', None), st.get('hud_btn_save', 'yes') == 'yes'),
+            (getattr(self, 'btn_bookmark', None), st.get('hud_btn_bookmark', 'yes') == 'yes'),
+            (getattr(self, 'btn_anki', None), st.get('hud_btn_anki', 'yes') == 'yes'),
+            (getattr(self, 'btn_sleep', None), st.get('hud_btn_sleep', 'yes') == 'yes'),
+            (getattr(self, 'btn_settings', None), st.get('hud_btn_settings', 'yes') == 'yes'),
+        ]
+        visible_drawer_count = 0
+        for btn, is_vis in drawer_buttons:
+            if btn is not None:
+                btn.setVisible(is_vis)
+                if is_vis:
+                    visible_drawer_count += 1
+
+        # More Tools Drawer Toggle (•••)
+        show_more_cfg = (st.get('hud_btn_more', 'yes') == 'yes')
+        can_show_more = show_more_cfg and (visible_drawer_count > 0)
+        if hasattr(self, 'btn_more'):
+            self.btn_more.setVisible(can_show_more)
+
+        auto_expand = (st.get('hud_expand_tools_drawer', 'no') == 'yes')
+        if hasattr(self, 'tools_box'):
+            if visible_drawer_count == 0 or not can_show_more:
+                self.tools_box.setVisible(False)
+                if hasattr(self, 'btn_more'):
+                    self.btn_more.setChecked(False)
+            elif auto_expand:
+                self.tools_box.setVisible(True)
+                if hasattr(self, 'btn_more'):
+                    self.btn_more.setChecked(True)
+            elif not getattr(self, '_user_toggled_drawer', False):
+                self.tools_box.setVisible(False)
+                if hasattr(self, 'btn_more'):
+                    self.btn_more.setChecked(False)
+        self.adjustSize()
 
     def _on_speed_wheel(self, event):
         """Allow fine-grained speed adjustment via scroll wheel over the speed pill (+/- 0.05x)."""
@@ -2248,6 +2329,17 @@ class FloatingPlayerWindow(QWidget):
             self.apply_theme(target_theme)
             if hasattr(self, 'queue_window'):
                 self.queue_window.apply_theme(target_theme)
+
+        # Dynamic live button settings reload when settings.json changes
+        try:
+            settings_file = os.path.join(CONFIG_DIR, 'settings.json')
+            if os.path.isfile(settings_file):
+                mtime = os.path.getmtime(settings_file)
+                if getattr(self, '_last_settings_mtime', 0.0) != mtime:
+                    self._last_settings_mtime = mtime
+                    self.apply_button_settings()
+        except Exception:
+            pass
 
         # Sleep Timer countdown & auto-fade logic
         now = time.time()
@@ -2404,7 +2496,7 @@ class FloatingPlayerWindow(QWidget):
 
         if tot_c > 0 and (comp_c + fail_c < tot_c or data['is_loading']):
             self._chunks_completed_at = 0.0
-            if not self.chunk_box.isVisible():
+            if getattr(self, '_cfg_show_chunks', True) and not self.chunk_box.isVisible():
                 self.chunk_box.setVisible(True)
                 self.adjustSize()
             self.lbl_chunk_phase.setText(f'Generating chunks ({comp_c}/{tot_c})…')
@@ -2716,6 +2808,7 @@ class FloatingPlayerWindow(QWidget):
         vis = not self.tools_box.isVisible()
         self.tools_box.setVisible(vis)
         self.btn_more.setChecked(vis)
+        self._user_toggled_drawer = True
         self.adjustSize()
 
     def _step_speed(self, direction: int):
@@ -2984,53 +3077,73 @@ class FloatingPlayerWindow(QWidget):
             event.accept()
             return
         if key in (Qt.Key.Key_Left, Qt.Key.Key_J):
-            self.controller.jump_backward(10.0 if shift else 5.0)
-            event.accept()
-            return
+            if hasattr(self, 'btn_back') and self.btn_back.isHidden():
+                pass
+            else:
+                self.controller.jump_backward(10.0 if shift else 5.0)
+                event.accept()
+                return
         if key in (Qt.Key.Key_Right, Qt.Key.Key_L):
-            self.controller.jump_forward(10.0 if shift else 5.0)
-            event.accept()
-            return
+            if hasattr(self, 'btn_fwd') and self.btn_fwd.isHidden():
+                pass
+            else:
+                self.controller.jump_forward(10.0 if shift else 5.0)
+                event.accept()
+                return
         if key in (Qt.Key.Key_BracketLeft, Qt.Key.Key_Minus):
-            self._step_speed(-1)
-            event.accept()
-            return
+            if hasattr(self, 'btn_speed') and self.btn_speed.isHidden():
+                pass
+            else:
+                self._step_speed(-1)
+                event.accept()
+                return
         if key in (Qt.Key.Key_BracketRight, Qt.Key.Key_Plus, Qt.Key.Key_Equal):
-            self._step_speed(1)
-            event.accept()
-            return
+            if hasattr(self, 'btn_speed') and self.btn_speed.isHidden():
+                pass
+            else:
+                self._step_speed(1)
+                event.accept()
+                return
         if key == Qt.Key.Key_T:
-            self._toggle_transcript()
-            event.accept()
-            return
+            if hasattr(self, 'btn_transcript') and not self.btn_transcript.isHidden():
+                self._toggle_transcript()
+                event.accept()
+                return
         if key == Qt.Key.Key_M:
-            self._toggle_tools_drawer()
-            event.accept()
-            return
+            if hasattr(self, 'btn_more') and not self.btn_more.isHidden():
+                self._toggle_tools_drawer()
+                event.accept()
+                return
         if key == Qt.Key.Key_Q:
-            self._toggle_queue_window()
-            event.accept()
-            return
+            if hasattr(self, 'btn_queue') and not self.btn_queue.isHidden():
+                self._toggle_queue_window()
+                event.accept()
+                return
         if key == Qt.Key.Key_B:
-            self._on_bookmark_clicked()
-            event.accept()
-            return
+            if hasattr(self, 'btn_bookmark') and not self.btn_bookmark.isHidden():
+                self._on_bookmark_clicked()
+                event.accept()
+                return
         if key == Qt.Key.Key_A:
-            self._on_anki_clicked()
-            event.accept()
-            return
+            if hasattr(self, 'btn_anki') and not self.btn_anki.isHidden():
+                self._on_anki_clicked()
+                event.accept()
+                return
         if key == Qt.Key.Key_Z:
-            self._cycle_sleep_timer()
-            event.accept()
-            return
+            if hasattr(self, 'btn_sleep') and not self.btn_sleep.isHidden():
+                self._cycle_sleep_timer()
+                event.accept()
+                return
         if key == Qt.Key.Key_O:
-            self._on_ocr_clicked()
-            event.accept()
-            return
+            if hasattr(self, 'btn_ocr') and not self.btn_ocr.isHidden():
+                self._on_ocr_clicked()
+                event.accept()
+                return
         if key == Qt.Key.Key_S:
-            self._on_stop_clicked()
-            event.accept()
-            return
+            if hasattr(self, 'btn_stop') and not self.btn_stop.isHidden():
+                self._on_stop_clicked()
+                event.accept()
+                return
         if key == Qt.Key.Key_Escape:
             self._on_close_clicked()
             event.accept()

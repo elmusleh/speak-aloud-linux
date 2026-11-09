@@ -25,11 +25,13 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QSlider,
     QSpinBox,
     QTabWidget,
@@ -126,6 +128,7 @@ class TTSSettingsWindow(QDialog):
         # Tabs
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_voices_tab(), 'Voices && Speed')
+        self.tabs.addTab(self._build_popup_buttons_tab(), 'Popup Buttons')
         self.tabs.addTab(self._build_player_filter_tab(), 'Floating HUD && Text Filter')
         self.tabs.addTab(self._build_translate_bench_tab(), 'Translation && Test Bench')
         self.tabs.addTab(self._build_analytics_tab(), 'Analytics && Productivity')
@@ -267,6 +270,14 @@ class TTSSettingsWindow(QDialog):
             }
         """)
 
+    def _set_status(self, msg: str, is_error: bool = False):
+        if hasattr(self, 'lbl_status') and self.lbl_status is not None:
+            self.lbl_status.setText(msg)
+            if is_error:
+                self.lbl_status.setStyleSheet("color: #F87171; font-weight: 600; font-size: 12px;")
+            else:
+                self.lbl_status.setStyleSheet("color: #34D399; font-weight: 600; font-size: 12px;")
+
     def _build_voices_tab(self) -> QWidget:
         w = QWidget()
         form = QFormLayout(w)
@@ -349,6 +360,244 @@ class TTSSettingsWindow(QDialog):
         form.addRow('Speech Pitch Offset:', self._wrap_slider(self.sl_pitch, self.lbl_pitch))
 
         return w
+
+    def _apply_button_preset(self, preset: str):
+        if preset == "minimal":
+            self.chk_btn_speed.setChecked(True)
+            self.chk_btn_mode_tag.setChecked(False)
+            self.chk_btn_back.setChecked(False)
+            self.chk_btn_fwd.setChecked(False)
+            self.chk_btn_stop.setChecked(True)
+            self.chk_show_progress.setChecked(True)
+            self.chk_show_chunks.setChecked(False)
+            self.chk_btn_close.setChecked(True)
+            self.chk_btn_more.setChecked(False)
+            self.chk_btn_transcript.setChecked(False)
+            self.chk_btn_enqueue.setChecked(False)
+            self.chk_btn_queue.setChecked(False)
+            self.chk_btn_ocr.setChecked(False)
+            self.chk_btn_save.setChecked(False)
+            self.chk_btn_bookmark.setChecked(False)
+            self.chk_btn_anki.setChecked(False)
+            self.chk_btn_sleep.setChecked(False)
+            self.chk_btn_settings.setChecked(False)
+            self.chk_expand_drawer.setChecked(False)
+            self._set_status("Applied 'Minimal' preset (essential playback controls only).")
+        elif preset == "reader":
+            self.chk_btn_speed.setChecked(True)
+            self.chk_btn_mode_tag.setChecked(True)
+            self.chk_btn_back.setChecked(True)
+            self.chk_btn_fwd.setChecked(True)
+            self.chk_btn_stop.setChecked(True)
+            self.chk_show_progress.setChecked(True)
+            self.chk_show_chunks.setChecked(True)
+            self.chk_btn_close.setChecked(True)
+            self.chk_btn_more.setChecked(True)
+            self.chk_btn_transcript.setChecked(True)
+            self.chk_btn_enqueue.setChecked(False)
+            self.chk_btn_queue.setChecked(False)
+            self.chk_btn_ocr.setChecked(False)
+            self.chk_btn_save.setChecked(False)
+            self.chk_btn_bookmark.setChecked(True)
+            self.chk_btn_anki.setChecked(False)
+            self.chk_btn_sleep.setChecked(True)
+            self.chk_btn_settings.setChecked(False)
+            self.chk_expand_drawer.setChecked(False)
+            self._set_status("Applied 'Reader / Study' preset (speed, seek, transcript, notes & sleep).")
+        elif preset == "productivity":
+            self.chk_btn_speed.setChecked(True)
+            self.chk_btn_mode_tag.setChecked(True)
+            self.chk_btn_back.setChecked(True)
+            self.chk_btn_fwd.setChecked(True)
+            self.chk_btn_stop.setChecked(True)
+            self.chk_show_progress.setChecked(True)
+            self.chk_show_chunks.setChecked(True)
+            self.chk_btn_close.setChecked(True)
+            self.chk_btn_more.setChecked(True)
+            self.chk_btn_transcript.setChecked(True)
+            self.chk_btn_enqueue.setChecked(True)
+            self.chk_btn_queue.setChecked(True)
+            self.chk_btn_ocr.setChecked(True)
+            self.chk_btn_save.setChecked(True)
+            self.chk_btn_bookmark.setChecked(False)
+            self.chk_btn_anki.setChecked(False)
+            self.chk_btn_sleep.setChecked(False)
+            self.chk_btn_settings.setChecked(True)
+            self.chk_expand_drawer.setChecked(False)
+            self._set_status("Applied 'Productivity' preset (queue, OCR, save MP3 & settings).")
+        elif preset == "all":
+            self.chk_btn_speed.setChecked(True)
+            self.chk_btn_mode_tag.setChecked(True)
+            self.chk_btn_back.setChecked(True)
+            self.chk_btn_fwd.setChecked(True)
+            self.chk_btn_stop.setChecked(True)
+            self.chk_show_progress.setChecked(True)
+            self.chk_show_chunks.setChecked(True)
+            self.chk_btn_close.setChecked(True)
+            self.chk_btn_more.setChecked(True)
+            self.chk_btn_transcript.setChecked(True)
+            self.chk_btn_enqueue.setChecked(True)
+            self.chk_btn_queue.setChecked(True)
+            self.chk_btn_ocr.setChecked(True)
+            self.chk_btn_save.setChecked(True)
+            self.chk_btn_bookmark.setChecked(True)
+            self.chk_btn_anki.setChecked(True)
+            self.chk_btn_sleep.setChecked(True)
+            self.chk_btn_settings.setChecked(True)
+            self.chk_expand_drawer.setChecked(False)
+            self._set_status("Applied 'Enable All' preset (all buttons enabled).")
+
+    def _build_popup_buttons_tab(self) -> QWidget:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("background: transparent;")
+
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        layout.setSpacing(12)
+        layout.setContentsMargins(10, 10, 10, 10)
+
+        # Header description
+        desc_lbl = QLabel(
+            "Manage which controls and action buttons appear in the Floating Player popup.\n"
+            "Enable only what you need to keep the popup uncluttered and focused on your workflow."
+        )
+        desc_lbl.setStyleSheet("color: #94A3B8; font-size: 11px; line-height: 1.4;")
+        desc_lbl.setWordWrap(True)
+        layout.addWidget(desc_lbl)
+
+        # Quick Presets Toolbar
+        preset_box = QFrame()
+        preset_box.setStyleSheet(
+            "background-color: #141721; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; padding: 4px;"
+        )
+        preset_layout = QHBoxLayout(preset_box)
+        preset_layout.setContentsMargins(8, 6, 8, 6)
+        preset_layout.setSpacing(6)
+
+        pr_title = QLabel("Presets:")
+        pr_title.setStyleSheet("font-weight: 600; font-size: 11px; color: #818CF8;")
+        preset_layout.addWidget(pr_title)
+
+        btn_pre_minimal = QPushButton("🎯 Minimal")
+        btn_pre_minimal.setToolTip("Keep only Speed Pill, Play/Pause, Scrubber, Stop & Close")
+        btn_pre_minimal.setObjectName("secondaryBtn")
+        btn_pre_minimal.clicked.connect(lambda: self._apply_button_preset("minimal"))
+        preset_layout.addWidget(btn_pre_minimal)
+
+        btn_pre_reader = QPushButton("📖 Reader / Study")
+        btn_pre_reader.setToolTip("Speed, Play/Pause, ±10s, Scrubber, Live Transcript, Bookmark & Sleep Timer")
+        btn_pre_reader.setObjectName("secondaryBtn")
+        btn_pre_reader.clicked.connect(lambda: self._apply_button_preset("reader"))
+        preset_layout.addWidget(btn_pre_reader)
+
+        btn_pre_tools = QPushButton("⚡ Productivity")
+        btn_pre_tools.setToolTip("Speed, Play/Pause, Scrubber, Stop, Queue, OCR, Save MP3 & Settings")
+        btn_pre_tools.setObjectName("secondaryBtn")
+        btn_pre_tools.clicked.connect(lambda: self._apply_button_preset("productivity"))
+        preset_layout.addWidget(btn_pre_tools)
+
+        btn_pre_all = QPushButton("🌟 Enable All")
+        btn_pre_all.setToolTip("Show all available player buttons and drawer tools")
+        btn_pre_all.setObjectName("secondaryBtn")
+        btn_pre_all.clicked.connect(lambda: self._apply_button_preset("all"))
+        preset_layout.addWidget(btn_pre_all)
+
+        preset_layout.addStretch(1)
+        layout.addWidget(preset_box)
+
+        # Section 1: Main Transport & Player Bar Controls
+        sec1 = QLabel("Main Player Controls (Always-Visible Row)")
+        sec1.setProperty("class", "sectionHeader")
+        layout.addWidget(sec1)
+
+        grid1 = QGridLayout()
+        grid1.setSpacing(8)
+
+        self.chk_btn_play_pause = QCheckBox("Play / Pause / Replay Button (Core playback button)")
+        self.chk_btn_play_pause.setChecked(True)
+        self.chk_btn_play_pause.setEnabled(False)
+        self.chk_btn_play_pause.setToolTip("Essential core playback control (always enabled)")
+        grid1.addWidget(self.chk_btn_play_pause, 0, 0)
+
+        self.chk_btn_speed = QCheckBox("Speed Pill (e.g. 1.2x on the left, click/scroll to change rate)")
+        grid1.addWidget(self.chk_btn_speed, 0, 1)
+
+        self.chk_btn_back = QCheckBox("Jump Backward -10s Button (rotate-ccw)")
+        grid1.addWidget(self.chk_btn_back, 1, 0)
+
+        self.chk_btn_fwd = QCheckBox("Jump Forward +10s Button (rotate-cw)")
+        grid1.addWidget(self.chk_btn_fwd, 1, 1)
+
+        self.chk_btn_stop = QCheckBox("Stop Button (halt playback immediately)")
+        grid1.addWidget(self.chk_btn_stop, 2, 0)
+
+        self.chk_show_progress = QCheckBox("Timeline Scrubber (seek slider, current & total timecodes)")
+        grid1.addWidget(self.chk_show_progress, 2, 1)
+
+        self.chk_btn_mode_tag = QCheckBox("Speech Mode Badge (shows 'Speech' or 'Queued')")
+        grid1.addWidget(self.chk_btn_mode_tag, 3, 0)
+
+        self.chk_show_chunks = QCheckBox("Chunk Synthesis Progress Strip (pills & % indicator)")
+        grid1.addWidget(self.chk_show_chunks, 3, 1)
+
+        self.chk_btn_close = QCheckBox("Close / Hide Button (✕ dismiss popup)")
+        grid1.addWidget(self.chk_btn_close, 4, 0)
+
+        self.chk_btn_more = QCheckBox("More Tools Drawer Toggle Button (••• / Hotkey: M)")
+        grid1.addWidget(self.chk_btn_more, 4, 1)
+
+        layout.addLayout(grid1)
+
+        # Section 2: Expandable More Tools Drawer
+        sec2 = QLabel("More Tools Drawer Actions (Press M to expand)")
+        sec2.setProperty("class", "sectionHeader")
+        layout.addWidget(sec2)
+
+        grid2 = QGridLayout()
+        grid2.setSpacing(8)
+
+        self.chk_btn_transcript = QCheckBox("📜 Live Transcript Drawer [T] (highlighting & word karaoke)")
+        grid2.addWidget(self.chk_btn_transcript, 0, 0)
+
+        self.chk_btn_enqueue = QCheckBox("➕ Add Selection to Queue [Space/Hotkey] (adds highlighted text)")
+        grid2.addWidget(self.chk_btn_enqueue, 0, 1)
+
+        self.chk_btn_queue = QCheckBox("📋 Playback Queue Window [Q] (reorder, loop & track items)")
+        grid2.addWidget(self.chk_btn_queue, 1, 0)
+
+        self.chk_btn_ocr = QCheckBox("📷 OCR Screen Region [O] (drag selection over screen to read)")
+        grid2.addWidget(self.chk_btn_ocr, 1, 1)
+
+        self.chk_btn_save = QCheckBox("💾 Save Audio as MP3 (export current speech to file)")
+        grid2.addWidget(self.chk_btn_save, 2, 0)
+
+        self.chk_btn_bookmark = QCheckBox("🔖 Bookmark Quote & Note [B] (saves quote with timestamp)")
+        grid2.addWidget(self.chk_btn_bookmark, 2, 1)
+
+        self.chk_btn_anki = QCheckBox("🗂️ Export to Anki Flashcard [A] (creates vocabulary note)")
+        grid2.addWidget(self.chk_btn_anki, 3, 0)
+
+        self.chk_btn_sleep = QCheckBox("🌙 Sleep / Pomodoro Timer [Z] (15m, 30m, 45m, 60m, end)")
+        grid2.addWidget(self.chk_btn_sleep, 3, 1)
+
+        self.chk_btn_settings = QCheckBox("⚙️ Settings Studio Shortcut (opens this settings window)")
+        grid2.addWidget(self.chk_btn_settings, 4, 0)
+
+        layout.addLayout(grid2)
+
+        # Section 3: Drawer Behavior & Display Preferences
+        sec3 = QLabel("Drawer Behavior & Automation")
+        sec3.setProperty("class", "sectionHeader")
+        layout.addWidget(sec3)
+
+        self.chk_expand_drawer = QCheckBox("Always keep More Tools Drawer expanded by default on popup launch")
+        layout.addWidget(self.chk_expand_drawer)
+
+        layout.addStretch(1)
+        scroll.setWidget(w)
+        return scroll
 
     def _build_player_filter_tab(self) -> QWidget:
         w = QWidget()
@@ -702,6 +951,27 @@ class TTSSettingsWindow(QDialog):
         self.sp_first_chunk.setValue(max(60, min(400, read_int_cfg('first_chunk_max', 140, strip_chars=''))))
         self.sp_max_segment.setValue(max(100, min(800, read_int_cfg('max_segment_chars', 280, strip_chars=''))))
         self.chk_voice_clarity.setChecked(read_bool_cfg('voice_clarity_eq', False))
+        # Popup Player Buttons
+        self.chk_btn_speed.setChecked(read_bool_cfg('hud_btn_speed', True))
+        self.chk_btn_mode_tag.setChecked(read_bool_cfg('hud_btn_mode_tag', True))
+        self.chk_btn_back.setChecked(read_bool_cfg('hud_btn_back', True))
+        self.chk_btn_fwd.setChecked(read_bool_cfg('hud_btn_fwd', True))
+        self.chk_btn_stop.setChecked(read_bool_cfg('hud_btn_stop', True))
+        self.chk_show_progress.setChecked(read_bool_cfg('hud_show_progress', True))
+        self.chk_show_chunks.setChecked(read_bool_cfg('hud_show_chunks', True))
+        self.chk_btn_close.setChecked(read_bool_cfg('hud_btn_close', True))
+        self.chk_btn_more.setChecked(read_bool_cfg('hud_btn_more', True))
+        self.chk_btn_transcript.setChecked(read_bool_cfg('hud_btn_transcript', True))
+        self.chk_btn_enqueue.setChecked(read_bool_cfg('hud_btn_enqueue', True))
+        self.chk_btn_queue.setChecked(read_bool_cfg('hud_btn_queue', True))
+        self.chk_btn_ocr.setChecked(read_bool_cfg('hud_btn_ocr', True))
+        self.chk_btn_save.setChecked(read_bool_cfg('hud_btn_save', True))
+        self.chk_btn_bookmark.setChecked(read_bool_cfg('hud_btn_bookmark', True))
+        self.chk_btn_anki.setChecked(read_bool_cfg('hud_btn_anki', True))
+        self.chk_btn_sleep.setChecked(read_bool_cfg('hud_btn_sleep', True))
+        self.chk_btn_settings.setChecked(read_bool_cfg('hud_btn_settings', True))
+        self.chk_expand_drawer.setChecked(read_bool_cfg('hud_expand_tools_drawer', False))
+
         self.chk_filter_md.setChecked(read_bool_cfg('filter_markdown', True))
         self.chk_filter_urls.setChecked(read_bool_cfg('filter_urls', True))
         self.chk_filter_code.setChecked(read_bool_cfg('skip_code', read_bool_cfg('filter_code', False)))
@@ -742,6 +1012,28 @@ class TTSSettingsWindow(QDialog):
         first_chunk = str(self.sp_first_chunk.value())
         max_seg = str(self.sp_max_segment.value())
         clarity_eq = 'yes' if self.chk_voice_clarity.isChecked() else 'no'
+
+        # Popup Button Visibility
+        btn_speed = 'yes' if self.chk_btn_speed.isChecked() else 'no'
+        btn_mode_tag = 'yes' if self.chk_btn_mode_tag.isChecked() else 'no'
+        btn_back = 'yes' if self.chk_btn_back.isChecked() else 'no'
+        btn_fwd = 'yes' if self.chk_btn_fwd.isChecked() else 'no'
+        btn_stop = 'yes' if self.chk_btn_stop.isChecked() else 'no'
+        show_prog = 'yes' if self.chk_show_progress.isChecked() else 'no'
+        show_chunks = 'yes' if self.chk_show_chunks.isChecked() else 'no'
+        btn_close = 'yes' if self.chk_btn_close.isChecked() else 'no'
+        btn_more = 'yes' if self.chk_btn_more.isChecked() else 'no'
+        btn_transcript = 'yes' if self.chk_btn_transcript.isChecked() else 'no'
+        btn_enqueue = 'yes' if self.chk_btn_enqueue.isChecked() else 'no'
+        btn_queue = 'yes' if self.chk_btn_queue.isChecked() else 'no'
+        btn_ocr = 'yes' if self.chk_btn_ocr.isChecked() else 'no'
+        btn_save = 'yes' if self.chk_btn_save.isChecked() else 'no'
+        btn_bookmark = 'yes' if self.chk_btn_bookmark.isChecked() else 'no'
+        btn_anki = 'yes' if self.chk_btn_anki.isChecked() else 'no'
+        btn_sleep = 'yes' if self.chk_btn_sleep.isChecked() else 'no'
+        btn_settings = 'yes' if self.chk_btn_settings.isChecked() else 'no'
+        expand_drawer = 'yes' if self.chk_expand_drawer.isChecked() else 'no'
+
         f_md = 'yes' if self.chk_filter_md.isChecked() else 'no'
         f_urls = 'yes' if self.chk_filter_urls.isChecked() else 'no'
         f_code = 'yes' if self.chk_filter_code.isChecked() else 'no'
@@ -793,6 +1085,26 @@ class TTSSettingsWindow(QDialog):
             'first_chunk_max': first_chunk,
             'max_segment_chars': max_seg,
             'voice_clarity_eq': clarity_eq,
+            'hud_btn_speed': btn_speed,
+            'hud_btn_mode_tag': btn_mode_tag,
+            'hud_btn_back': btn_back,
+            'hud_btn_play_pause': 'yes',
+            'hud_btn_fwd': btn_fwd,
+            'hud_btn_stop': btn_stop,
+            'hud_show_progress': show_prog,
+            'hud_show_chunks': show_chunks,
+            'hud_btn_close': btn_close,
+            'hud_btn_more': btn_more,
+            'hud_btn_transcript': btn_transcript,
+            'hud_btn_enqueue': btn_enqueue,
+            'hud_btn_queue': btn_queue,
+            'hud_btn_ocr': btn_ocr,
+            'hud_btn_save': btn_save,
+            'hud_btn_bookmark': btn_bookmark,
+            'hud_btn_anki': btn_anki,
+            'hud_btn_sleep': btn_sleep,
+            'hud_btn_settings': btn_settings,
+            'hud_expand_tools_drawer': expand_drawer,
         })
 
         # Also maintain legacy flat filenames for backward compatibility
@@ -821,6 +1133,12 @@ class TTSSettingsWindow(QDialog):
         write_cfg('crossfade_audio', crossfade)
         write_cfg('auto_pause_bluetooth', pause_bt)
         write_cfg('encrypt_audio_cache', encrypt_c)
+        write_cfg('hud_btn_speed', btn_speed)
+        write_cfg('hud_btn_stop', btn_stop)
+        write_cfg('hud_show_progress', show_prog)
+        write_cfg('hud_btn_more', btn_more)
+        write_cfg('hud_btn_transcript', btn_transcript)
+        write_cfg('hud_btn_ocr', btn_ocr)
 
     def _speak_lexicon_preview(self):
         word = self.ed_lex_word.text().strip()

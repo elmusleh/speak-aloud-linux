@@ -53,6 +53,7 @@ A desktop Text-to-Speech (TTS) studio for Linux with seamless trilingual (**Engl
   - Detects English, Arabic (with embedded number merging), and German segments within the same passage and switches voices seamlessly without misclassifying English technical jargon.
 - **Modern Settings & Studio Test Bench (`tts-settings.py`)**:
   - Tabbed PyQt6 dark-slate settings window with voice dropdowns, live **Test EN / AR / DE** buttons, per-language rate sliders, Markdown filter toggles, translation settings, a **Quick Speak & MP3 Export Bench**, and audio cache management.
+  - **Dedicated "Popup Buttons" Management Tab**: Customize which buttons and actions are shown or hidden in the Floating Player popup. Features one-click presets (**Minimal**, **Reader / Study**, **Productivity**, **Enable All**), granular checkboxes for both primary transport controls and drawer tools, auto-hiding of the drawer toggle when all tools are disabled, and real-time live synchronization without daemon restarts.
 
 ## 🛠️ Dependencies
 

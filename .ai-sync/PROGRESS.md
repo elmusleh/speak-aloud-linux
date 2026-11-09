@@ -56,3 +56,12 @@
 - [x] 9. Audio cache checksum and corrupt header verification (`tts_synth_worker.py`)
 - [x] 10. Calibre eBook Library direct extractor (`tts_reader.py`, `speak.sh --calibre`)
 - [x] 11. Headless GitHub Actions CI test workflow (`.github/workflows/ci.yml`)
+
+## Phase 9: Dedicated Popup Buttons Management Tab
+- [x] 1. Add schema-validated HUD button visibility keys to `TTSSettingsStore.DEFAULTS` & `validate` (`tts_text_processor.py`)
+- [x] 2. Build dedicated "Popup Buttons" tab in `TTSSettingsWindow` with categorized Primary Controls & Drawer Tools (`tts-settings.py`)
+- [x] 3. Add one-click presets: Minimal, Reader / Study, Productivity, and Enable All (`tts-settings.py`)
+- [x] 4. Add `apply_button_settings` to `FloatingPlayerWindow` to show/hide controls cleanly and auto-hide More Tools when empty (`tts_hud.py`)
+- [x] 5. Add dynamic live-sync reloading button visibility on `settings.json` modification without daemon restarts (`tts_hud.py`)
+- [x] 6. Guard keyboard hotkeys in `FloatingPlayerWindow` against disabled buttons (`tts_hud.py`)
+- [x] 7. Automated tests covering presets, schema validation, and button hide/show rules (50/50 passed)
