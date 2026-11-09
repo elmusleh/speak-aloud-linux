@@ -351,6 +351,9 @@ class TTSSettingsWindow(QDialog):
         self.chk_enable_replay = QCheckBox('Keep Floating Player open at end of speech for instant Replay / Seeking')
         layout.addWidget(self.chk_enable_replay)
 
+        self.chk_duck_audio = QCheckBox('Automatically duck background audio (Spotify, Firefox) while speaking')
+        layout.addWidget(self.chk_duck_audio)
+
         pos_row = QHBoxLayout()
         btn_reset_pos = QPushButton('Reset Floating Player && Queue Positions')
         btn_reset_pos.setObjectName('secondaryBtn')
@@ -543,6 +546,7 @@ class TTSSettingsWindow(QDialog):
 
         self.chk_show_player.setChecked(read_bool_cfg('show_hud', read_bool_cfg('show_floating_player', True)))
         self.chk_enable_replay.setChecked(read_bool_cfg('replay_at_end', read_bool_cfg('enable_replay', True)))
+        self.chk_duck_audio.setChecked(read_bool_cfg('duck_background_audio', False))
         self.chk_filter_md.setChecked(read_bool_cfg('filter_markdown', True))
         self.chk_filter_urls.setChecked(read_bool_cfg('filter_urls', True))
         self.chk_filter_code.setChecked(read_bool_cfg('skip_code', read_bool_cfg('filter_code', False)))
@@ -569,6 +573,7 @@ class TTSSettingsWindow(QDialog):
         spd_str = f'{self.sl_speed.value() / 100.0:.2f}'
         show_hud = 'yes' if self.chk_show_player.isChecked() else 'no'
         replay = 'yes' if self.chk_enable_replay.isChecked() else 'no'
+        duck_bg = 'yes' if self.chk_duck_audio.isChecked() else 'no'
         f_md = 'yes' if self.chk_filter_md.isChecked() else 'no'
         f_urls = 'yes' if self.chk_filter_urls.isChecked() else 'no'
         f_code = 'yes' if self.chk_filter_code.isChecked() else 'no'
@@ -606,6 +611,7 @@ class TTSSettingsWindow(QDialog):
             'translate_to': t_targ,
             'translate_from': src_lang,
             'translate_api_key': t_key,
+            'duck_background_audio': duck_bg,
         })
 
         # Also maintain legacy flat filenames for backward compatibility

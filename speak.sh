@@ -54,6 +54,9 @@ ln -sfn "$SYNTH_SOCKET" "$TEMP_DIR/speak-aloud-synth.sock" 2>/dev/null || true
 OVERRIDE_TEXT=""
 OCR_MODE="no"
 OCR_IMAGE=""
+FILE_INPUT=""
+PAGE_INPUT=""
+URL_INPUT=""
 OVERRIDE_EN_VOICE=""
 OVERRIDE_AR_VOICE=""
 OVERRIDE_DE_VOICE=""
@@ -77,6 +80,9 @@ Usage: speak.sh [OPTIONS]
 
 Options:
   --text TEXT                Speak explicit text
+  --file FILE                Read text from PDF, EPUB, or text file
+  --page N                   Page number for PDF (1-based)
+  --url URL                  Extract article text from webpage URL
   --ocr                      Select a screen region via rubber-band & read via OCR
   --ocr-image FILE           Extract text from an image file via OCR & speak it
   --queue                    Add selected (or --text / --ocr) content to the playback queue
@@ -107,6 +113,9 @@ EOF
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --text)               OVERRIDE_TEXT="$2";              shift 2 ;;
+        --file)               FILE_INPUT="$2";                 shift 2 ;;
+        --page)               PAGE_INPUT="$2";                 shift 2 ;;
+        --url)                URL_INPUT="$2";                  shift 2 ;;
         --ocr)                OCR_MODE="yes";                  shift 1 ;;
         --ocr-image)          OCR_MODE="yes"; OCR_IMAGE="$2";  shift 2 ;;
         --queue|-q)           TTS_MODE="queue";                shift 1 ;;
@@ -130,6 +139,28 @@ while [[ $# -gt 0 ]]; do
         *)                    shift ;;
     esac
 done
+
+if [ -n "$URL_INPUT" ] && [ -z "$OVERRIDE_TEXT" ]; then
+    if [ "$TTS_MODE" = "queue" ]; then
+        python3 "$SCRIPT_DIR/tts_reader.py" --url "$URL_INPUT" --queue
+        exit 0
+    else
+        OVERRIDE_TEXT=$(python3 "$SCRIPT_DIR/tts_reader.py" --url "$URL_INPUT" 2>/dev/null || echo "")
+        [ -z "$OVERRIDE_TEXT" ] && exit 0
+    fi
+fi
+
+if [ -n "$FILE_INPUT" ] && [ -z "$OVERRIDE_TEXT" ]; then
+    declare -a page_args=()
+    [ -n "$PAGE_INPUT" ] && page_args=(--page "$PAGE_INPUT")
+    if [ "$TTS_MODE" = "queue" ]; then
+        python3 "$SCRIPT_DIR/tts_reader.py" --file "$FILE_INPUT" "${page_args[@]}" --queue
+        exit 0
+    else
+        OVERRIDE_TEXT=$(python3 "$SCRIPT_DIR/tts_reader.py" --file "$FILE_INPUT" "${page_args[@]}" 2>/dev/null || echo "")
+        [ -z "$OVERRIDE_TEXT" ] && exit 0
+    fi
+fi
 
 if [ "$OCR_MODE" = "yes" ] && [ -z "$OVERRIDE_TEXT" ]; then
     if [ -n "$OCR_IMAGE" ]; then
@@ -512,6 +543,10 @@ generate_audio() {
             --socket "$SYNTH_SOCKET" 2>"$tmp_stderr"; then
             if [ -s "$tmp_audio" ]; then
                 mv "$tmp_audio" "$audio"
+                local tmp_words="${tmp_audio%.mp3}.words.json"
+                if [ -f "$tmp_words" ]; then
+                    mv "$tmp_words" "${audio%.mp3}.words.json" 2>/dev/null || true
+                fi
                 rm -f "$tmp_stderr" "$tmp_audio"
                 return 0
             fi

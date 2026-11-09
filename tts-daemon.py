@@ -34,8 +34,11 @@ from tts_text_processor import (
     get_mpv_socket_path,
     get_runtime_dir,
     get_status_path,
+    read_bool_config,
 )
 from tts_synth_worker import start_synth_server_thread
+from tts_ducking import AudioDucker
+from tts_mpris import MPRISServer
 
 ensure_runtime_symlinks()
 RUNTIME_DIR = get_runtime_dir()
@@ -159,6 +162,10 @@ class QtTTSDaemon:
         self.controller = MPVTimelineController()
         self.queue_window = QueueManagerWindow()
         self.player_window = FloatingPlayerWindow(self.controller, self.queue_window)
+
+        # Smart PipeWire / PulseAudio background audio ducking & MPRIS2 D-Bus service
+        self.ducker = AudioDucker()
+        self.mpris = MPRISServer(self)
 
         self._build_tray(QSystemTrayIcon, QMenu)
 
@@ -314,12 +321,20 @@ class QtTTSDaemon:
                     pass
 
         if state != self._state:
+            prev_state = self._state
             self._state = state
             label = _STATE_LABELS.get(state, '○  Ready')
             self.tray.setToolTip(f'Speak a Loud — {label}')
             self.tray.setIcon(self._icons.get(state, self._icons['IDLE']))
             self.log.info('State: %s — icon updated', state)
             self._sync_media_keys(state)
+
+            # Smart PipeWire / PulseAudio background audio ducking
+            if state == 'PLAYING':
+                if read_bool_config('duck_background_audio', False):
+                    self.ducker.duck()
+            elif prev_state == 'PLAYING' and state in ('IDLE', 'PAUSED'):
+                self.ducker.unduck()
 
         # Update Floating Player HUD & Queue Manager
         self.player_window.update_from_state(state)
@@ -400,6 +415,8 @@ class QtTTSDaemon:
         self.log.info('Quit requested')
         self.timer.stop()
         self._stop_keys()
+        if hasattr(self, 'ducker'):
+            self.ducker.unduck()
         if self._lock_fd:
             try:
                 fcntl.flock(self._lock_fd, fcntl.LOCK_UN)

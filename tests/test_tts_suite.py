@@ -270,3 +270,135 @@ def test_config_newline_safety_and_legacy_sync(tmp_path):
     assert _format_rate_str('-20%') == '-20%'
     assert _format_rate_str('+0%+50%') in ('+0%', '+50%')  # Recovers to valid edge-tts rate
 
+
+def test_mpris_service_registration_and_properties():
+    from PyQt6.QtWidgets import QApplication
+    _app = QApplication.instance() or QApplication([])
+    from tts_mpris import MPRISServer
+    class DummyDaemon:
+        def __init__(self):
+            self._state = 'PLAYING'
+            self.controller = None
+    daemon = DummyDaemon()
+    server = MPRISServer(daemon, service_name='org.mpris.MediaPlayer2.SpeakALoudTestUnit')
+    assert server.registered is True
+    assert server._root_adaptor.Identity == 'Speak a Loud'
+    assert server._root_adaptor.CanQuit is True
+    assert server._player_adaptor.PlaybackStatus == 'Playing'
+
+
+def test_word_boundary_karaoke_highlighting(tmp_path):
+    from PyQt6.QtWidgets import QApplication, QLabel
+    _app = QApplication.instance() or QApplication([])
+    from tts_hud import FloatingPlayerWindow, MPVTimelineController, QueueManagerWindow
+    ctrl = MPVTimelineController()
+    ctrl.session_id = 'test_karaoke_session'
+    ctrl.current_time = 0.5
+    ctrl.total_duration = 5.0
+    ctrl.chunks_meta = [{'lang': 'en', 'text': 'Hello world test'}]
+    ctrl.chunk_durations = [5.0]
+
+    qwin = QueueManagerWindow()
+    hud = FloatingPlayerWindow(ctrl, qwin)
+    hud._sync_transcript(ctrl.session_id, ctrl.chunks_meta, 0)
+    assert len(hud._transcript_rows) == 1
+
+    # Inject mock word boundary metadata
+    words = [
+        {'word': 'Hello', 'start': 0.0, 'end': 0.4},
+        {'word': 'world', 'start': 0.41, 'end': 0.8},
+        {'word': 'test', 'start': 0.81, 'end': 1.2},
+    ]
+    hud._segment_words[0] = words
+
+    # Run sync at t=0.5s -> 'world' should be highlighted with background-color #4F46E5
+    hud._sync_transcript(ctrl.session_id, ctrl.chunks_meta, 0)
+    lbl = hud._transcript_rows[0].findChild(QLabel)
+    assert lbl is not None
+    assert 'world' in lbl.text()
+    assert '#4F46E5' in lbl.text()
+
+
+def test_audio_ducker_sink_discovery_and_interface():
+    from tts_ducking import AudioDucker
+    ducker = AudioDucker(duck_volume_percent=40)
+    assert ducker.duck_volume_percent == 40
+    # Safe methods do not throw
+    streams = ducker.get_other_sink_inputs()
+    assert isinstance(streams, list)
+
+
+def test_keyring_integration_helpers(monkeypatch):
+    import subprocess
+    from tts_text_processor import get_keyring_api_key, store_keyring_api_key
+
+    # Mock subprocess run for secret-tool
+    def mock_run(cmd, *args, **kwargs):
+        class MockRes:
+            returncode = 0
+            stdout = 'sk-mock-api-key-12345\n'
+        return MockRes()
+
+    monkeypatch.setattr(subprocess, 'run', mock_run)
+    monkeypatch.setattr('shutil.which', lambda name: '/usr/bin/secret-tool' if name == 'secret-tool' else None)
+
+    assert get_keyring_api_key() == 'sk-mock-api-key-12345'
+    assert store_keyring_api_key('new-key') is True
+
+
+def test_document_and_web_reader_extraction(tmp_path):
+    from tts_reader import SimpleHTMLTextExtractor, enqueue_documents
+
+    html_sample = """
+    <html>
+      <head><title>Sample Article Title</title></head>
+      <body>
+        <nav><a href="/">Home</a></nav>
+        <h1>Main Heading</h1>
+        <p>This is the first paragraph with critical insights.</p>
+        <footer>Copyright 2026</footer>
+      </body>
+    </html>
+    """
+    parser = SimpleHTMLTextExtractor()
+    parser.feed(html_sample)
+    assert parser.title == 'Sample Article Title'
+    text = parser.get_text()
+    assert 'Main Heading' in text
+    assert 'critical insights' in text
+    assert 'Copyright' not in text  # Footer stripped
+
+    # Test enqueue documents
+    docs = [{'title': 'Chapter 1', 'text': 'Clean enqueued paragraph.'}]
+    count = enqueue_documents(docs, source='test')
+    assert count == 1
+
+
+def test_bookmark_saving_and_hotkey(tmp_path, monkeypatch):
+    from PyQt6.QtWidgets import QApplication
+    _app = QApplication.instance() or QApplication([])
+    from tts_hud import FloatingPlayerWindow, MPVTimelineController, QueueManagerWindow
+    from PyQt6.QtGui import QKeyEvent
+    from PyQt6.QtCore import Qt
+
+    b_dir = tmp_path / 'speak-aloud'
+    monkeypatch.setattr('os.path.expanduser', lambda p: str(b_dir) if 'speak-aloud' in p else os.path.expanduser(p))
+
+    ctrl = MPVTimelineController()
+    ctrl.current_time = 15.0
+    ctrl.total_duration = 60.0
+    ctrl.chunks_meta = [{'text': 'A memorable technical sentence to bookmark.'}]
+    qwin = QueueManagerWindow()
+    hud = FloatingPlayerWindow(ctrl, qwin)
+
+    # Press hotkey 'B'
+    ev_b = QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_B, Qt.KeyboardModifier.NoModifier)
+    hud.keyPressEvent(ev_b)
+
+    bfile = b_dir / 'bookmarks.md'
+    assert bfile.exists()
+    content = bfile.read_text(encoding='utf-8')
+    assert 'A memorable technical sentence to bookmark.' in content
+    assert '0:15 / 1:00' in content
+
+

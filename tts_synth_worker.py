@@ -206,14 +206,40 @@ async def synthesize_segment_async(
             fd, tmp_out = tempfile.mkstemp(prefix='.edge_', suffix='.mp3', dir=parent)
             os.close(fd)
             try:
-                comm = edge_tts.Communicate(text=text, voice=norm_voice, rate=norm_rate)
-                await asyncio.wait_for(comm.save(tmp_out), timeout=18.0)
+                comm = edge_tts.Communicate(
+                    text=text,
+                    voice=norm_voice,
+                    rate=norm_rate,
+                    boundary="WordBoundary",
+                )
+                words = []
+                with open(tmp_out, 'wb') as audio_f:
+                    async for chunk in comm.stream():
+                        ctype = chunk.get('type')
+                        if ctype == 'audio':
+                            audio_f.write(chunk.get('data', b''))
+                        elif ctype == 'WordBoundary':
+                            offset_ticks = chunk.get('offset', 0)
+                            duration_ticks = chunk.get('duration', 0)
+                            words.append({
+                                'word': chunk.get('text', ''),
+                                'start': round(offset_ticks / 10_000_000.0, 3),
+                                'end': round((offset_ticks + duration_ticks) / 10_000_000.0, 3),
+                            })
                 if os.path.isfile(tmp_out) and os.path.getsize(tmp_out) > 128:
                     os.replace(tmp_out, output_path)
+                    if words:
+                        words_path = os.path.splitext(output_path)[0] + '.words.json'
+                        try:
+                            from tts_text_processor import atomic_write_json
+                            atomic_write_json(words_path, words, mode=0o600)
+                        except Exception:
+                            pass
                     return {
                         'ok': True,
                         'engine': 'edge-tts',
                         'bytes': os.path.getsize(output_path),
+                        'words': len(words),
                     }
                 last_err = 'empty_mp3'
             except Exception as exc:
@@ -238,6 +264,19 @@ async def synthesize_segment_async(
         piper_model,
     )
     if piper_ok and os.path.isfile(output_path) and os.path.getsize(output_path) > 128:
+        words_path = os.path.splitext(output_path)[0] + '.words.json'
+        try:
+            tokens = text.split()
+            if tokens:
+                step = 0.32
+                piper_words = [
+                    {'word': tok, 'start': round(i * step, 3), 'end': round((i + 1) * step, 3)}
+                    for i, tok in enumerate(tokens)
+                ]
+                from tts_text_processor import atomic_write_json
+                atomic_write_json(words_path, piper_words, mode=0o600)
+        except Exception:
+            pass
         return {
             'ok': True,
             'engine': 'piper',

@@ -15,10 +15,12 @@ import json
 import os
 import re
 import sys
+import shutil
+import subprocess
 import tempfile
 import time
 import unicodedata
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 # ── Runtime Directory & Paths ($XDG_RUNTIME_DIR/speak-aloud-$UID) ─────────────
 
@@ -70,6 +72,73 @@ def get_queue_path() -> str:
 
 def get_queue_state_path() -> str:
     return os.path.join(get_runtime_dir(), 'queue_state.json')
+
+
+def read_bool_config(filename: str, default: bool = True) -> bool:
+    """Read a boolean value ('yes'/'no', 'true'/'false') from a config file in CONFIG_DIR."""
+    try:
+        with open(os.path.join(CONFIG_DIR, filename), 'r', encoding='utf-8') as f:
+            val = f.read().strip().lower()
+        return val in ('yes', 'true', '1', 'on')
+    except Exception:
+        return default
+
+
+def load_queue() -> List[Dict[str, Any]]:
+    """Load playback queue items from $RUNTIME_DIR/queue.json."""
+    path = get_queue_path()
+    if os.path.exists(path):
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                return data
+        except Exception:
+            pass
+    return []
+
+
+def save_queue(items: List[Dict[str, Any]]) -> None:
+    """Atomically persist playback queue items to $RUNTIME_DIR/queue.json."""
+    path = get_queue_path()
+    atomic_write_json(path, items, mode=0o600)
+
+
+def get_keyring_api_key() -> Optional[str]:
+    """Retrieve translation API key from desktop keyring (secret-tool) if available."""
+    if not shutil.which('secret-tool'):
+        return None
+    try:
+        res = subprocess.run(
+            ['secret-tool', 'lookup', 'application', 'speak-aloud'],
+            capture_output=True, text=True, timeout=1.0
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            return res.stdout.strip()
+    except Exception:
+        pass
+    return None
+
+
+def store_keyring_api_key(key: str) -> bool:
+    """Store translation API key securely in system keyring via secret-tool."""
+    if not shutil.which('secret-tool'):
+        return False
+    try:
+        if key:
+            res = subprocess.run(
+                ['secret-tool', 'store', '--label=Speak a Loud Translation API Key', 'application', 'speak-aloud'],
+                input=key, text=True, capture_output=True, timeout=2.0
+            )
+            return res.returncode == 0
+        else:
+            res = subprocess.run(
+                ['secret-tool', 'clear', 'application', 'speak-aloud'],
+                capture_output=True, timeout=1.0
+            )
+            return res.returncode == 0
+    except Exception:
+        return False
 
 
 def ensure_runtime_symlinks() -> None:
@@ -299,6 +368,8 @@ class TTSSettingsStore:
         'piper_model_en': '',
         'piper_model_de': '',
         'piper_model_ar': '',
+        'duck_background_audio': 'no',
+        'duck_volume_percent': '40',
     }
 
     def __init__(self, config_dir: Optional[str] = None):
@@ -350,6 +421,8 @@ class TTSSettingsStore:
             'piper_model_en': _sanitize_str(src.get('piper_model_en'), 512, ''),
             'piper_model_de': _sanitize_str(src.get('piper_model_de'), 512, ''),
             'piper_model_ar': _sanitize_str(src.get('piper_model_ar'), 512, ''),
+            'duck_background_audio': _norm_yes_no(src.get('duck_background_audio'), False),
+            'duck_volume_percent': str(_parse_int_clamped(src.get('duck_volume_percent'), 5, 90, 40)),
         }
         return validated
 
@@ -405,6 +478,12 @@ class TTSSettingsStore:
                 except OSError:
                     pass
 
+        # If API key in files is empty or masked as [KEYRING], attempt retrieval from system keyring
+        if not merged.get('translate_api_key') or merged.get('translate_api_key') == '[KEYRING]':
+            kr_key = get_keyring_api_key()
+            if kr_key:
+                merged['translate_api_key'] = kr_key
+
         return self.validate(merged)
 
     def save(self, updates: Dict[str, Any]) -> Dict[str, str]:
@@ -412,6 +491,11 @@ class TTSSettingsStore:
         current = self.load()
         current.update(updates or {})
         validated = self.validate(current)
+
+        # Store sensitive API key in system keyring if available
+        if 'translate_api_key' in (updates or {}):
+            store_keyring_api_key(validated.get('translate_api_key', ''))
+
         atomic_write_json(self.json_path, validated, mode=0o600)
         for key, val in validated.items():
             flat_path = os.path.join(self.config_dir, key)

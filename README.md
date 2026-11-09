@@ -17,6 +17,18 @@ A desktop Text-to-Speech (TTS) studio for Linux with seamless trilingual (**Engl
   - Drag a selection rectangle over any image, scanned PDF, or video frame to extract text with `tesseract` and immediately speak or queue it.
 - **Pronunciation Lexicon & Schema-Validated Settings (`lexicon.json` & `settings.json`)**:
   - Configurable pronunciation alias dictionary (`kubectl` → `kube control`, `PyQt6` → `Pie Cute 6`, `nginx` → `engine X`) editable directly in the Settings Studio, backed by atomic writes (`TTSSettingsStore`).
+- **MPRIS2 D-Bus Media Player (`org.mpris.MediaPlayer2.SpeakALoud`)**:
+  - Full Linux desktop media player integration for Cinnamon/GNOME/KDE sound applets, lock screens, KDE Connect remote controls, and Bluetooth headset playback/pause/seek controls.
+- **Word-Level Karaoke Highlighting**:
+  - Precision millisecond word tracking via `edge_tts` `WordBoundary` metadata; the active word glows with a high-contrast pill highlight in the Live Transcript Drawer as it is spoken.
+- **Smart PipeWire / PulseAudio Audio Ducking**:
+  - Automatically lowers background media players (Spotify, Firefox) by 60% while TTS is actively speaking and seamlessly restores volume on pause or completion.
+- **System Keyring Integration (`secret-tool`)**:
+  - Encrypts sensitive DeepL/OpenAI translation API keys in the user's desktop keyring rather than storing plaintext credentials on disk.
+- **Direct PDF, EPUB & Web Article Reader (`tts_reader.py` / `--file` & `--url`)**:
+  - Reads whole documents, specific PDF pages (`--page 12`), or web articles, cleanly stripping boilerplate/nav/ads and loading chapters directly into the Playback Queue.
+- **Bookmark & Timestamped Audio Note Saver (`~/.local/share/speak-aloud/bookmarks.md`)**:
+  - Press `B` or click the Bookmark icon (`★`) on the HUD to instantly save the active spoken sentence and timestamped audio location to markdown notes.
 - **Chunked Generation Progress (`ChunkedProgressUI`)**:
   - Visualizes multi-chunk neural synthesis in real time with overall percentage, progress bar, and per-chunk status pills (`1 ✓`, `2 ⟳`, `3 ○`).
   - **Fast-First-Chunk Optimization**: Caps the initial chunk (`seg_000`) at ~220 characters so speech begins in under a second while longer chunks (~480 chars) synthesize in the background.
@@ -57,6 +69,9 @@ chmod +x install.sh
 ### CLI Examples
 ```bash
 ./speak.sh --text "Hello مرحبا Grüße"          # Speak explicit trilingual text
+./speak.sh --file manual.pdf --page 4         # Read specific page from PDF
+./speak.sh --file book.epub --queue            # Load all EPUB chapters into Playback Queue
+./speak.sh --url https://example.com/essay     # Read cleaned web article aloud
 ./speak.sh --ocr                               # Drag screen region to OCR and speak aloud
 ./speak.sh --ocr-image page.png                # OCR an image file and speak aloud
 ./speak.sh --queue                             # Add current selection to Playback Queue

@@ -7,6 +7,7 @@ Inspired by obsidian-edge-tts (FloatingPlayerUI.tsx, ChunkedProgressUI.tsx,
 QueueManagerUI.tsx) and crafted for Linux desktops using PyQt6 + QtSvg.
 """
 
+import html
 import json
 import os
 import shutil
@@ -118,6 +119,10 @@ LUCIDE_SVGS: Dict[str, str] = {
     ),
     'download': (
         '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" '
+        'stroke="{color}" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>'
+    ),
+    'bookmark': (
+        '<path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z" '
         'stroke="{color}" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>'
     ),
     'sliders': (
@@ -1083,6 +1088,7 @@ class FloatingPlayerWindow(QWidget):
         self._transcript_session_id: str = ''
         self._transcript_active_idx: int = -1
         self._transcript_rows: List[QFrame] = []
+        self._segment_words: Dict[int, List[Dict[str, Any]]] = {}
 
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
@@ -1164,6 +1170,11 @@ class FloatingPlayerWindow(QWidget):
         self.btn_save = self._make_util_btn('download', 'Save spoken audio as MP3')
         self.btn_save.clicked.connect(self._on_save_mp3)
         header_row.addWidget(self.btn_save)
+
+        # Bookmark Passage (bookmark)
+        self.btn_bookmark = self._make_util_btn('bookmark', 'Bookmark current passage & timestamp (Hotkey: B)')
+        self.btn_bookmark.clicked.connect(self._on_bookmark_clicked)
+        header_row.addWidget(self.btn_bookmark)
 
         # Open Settings (sliders)
         self.btn_settings = self._make_util_btn('sliders', 'Open TTS Settings')
@@ -1733,6 +1744,7 @@ class FloatingPlayerWindow(QWidget):
             self._transcript_session_id = session_id
             self._transcript_active_idx = -1
             self._transcript_rows.clear()
+            self._segment_words.clear()
             while self.transcript_list_layout.count():
                 child = self.transcript_list_layout.takeAt(0)
                 if child.widget():
@@ -1763,19 +1775,77 @@ class FloatingPlayerWindow(QWidget):
                 self._transcript_rows.append(row)
             self.transcript_list_layout.addStretch(1)
 
+        # Update row active state styling when segment index changes
         if active_idx != self._transcript_active_idx and 0 <= active_idx < len(self._transcript_rows):
+            prev_idx = self._transcript_active_idx
             self._transcript_active_idx = active_idx
-            for idx, row in enumerate(self._transcript_rows):
-                is_act = (idx == active_idx)
-                row.setProperty('class', 'transcriptRowActive' if is_act else 'transcriptRow')
-                row.style().unpolish(row)
-                row.style().polish(row)
-                lbl = row.findChild(QLabel)
-                if lbl is not None:
-                    lbl.setProperty('class', 'transcriptTextActive' if is_act else 'transcriptText')
-                    lbl.style().unpolish(lbl)
-                    lbl.style().polish(lbl)
+            if 0 <= prev_idx < len(self._transcript_rows) and prev_idx < len(chunks_meta):
+                prev_row = self._transcript_rows[prev_idx]
+                prev_row.setProperty('class', 'transcriptRow')
+                prev_row.style().unpolish(prev_row)
+                prev_row.style().polish(prev_row)
+                prev_lbl = prev_row.findChild(QLabel)
+                if prev_lbl is not None:
+                    prev_lang = str(chunks_meta[prev_idx].get('lang', 'en')).upper()
+                    prev_txt = str(chunks_meta[prev_idx].get('text', '')).strip()
+                    prev_snip = prev_txt if len(prev_txt) <= 85 else prev_txt[:82].rstrip() + '…'
+                    prev_lbl.setText(f'{prev_idx + 1}. [{prev_lang}] {prev_snip}')
+                    prev_lbl.setProperty('class', 'transcriptText')
+                    prev_lbl.style().unpolish(prev_lbl)
+                    prev_lbl.style().polish(prev_lbl)
+
+            act_row = self._transcript_rows[active_idx]
+            act_row.setProperty('class', 'transcriptRowActive')
+            act_row.style().unpolish(act_row)
+            act_row.style().polish(act_row)
+            act_lbl = act_row.findChild(QLabel)
+            if act_lbl is not None:
+                act_lbl.setProperty('class', 'transcriptTextActive')
+                act_lbl.style().unpolish(act_lbl)
+                act_lbl.style().polish(act_lbl)
             self.transcript_scroll.ensureWidgetVisible(self._transcript_rows[active_idx], 0, 24)
+
+        # Dynamic word-level karaoke tracking within the active segment
+        if 0 <= active_idx < len(self._transcript_rows) and active_idx < len(chunks_meta):
+            if active_idx not in self._segment_words:
+                pad = f'{active_idx:03d}'
+                wpath = os.path.join(WORK_DIR, f'seg_{pad}.words.json')
+                if os.path.isfile(wpath):
+                    try:
+                        with open(wpath, 'r', encoding='utf-8') as wf:
+                            self._segment_words[active_idx] = json.load(wf)
+                    except Exception:
+                        self._segment_words[active_idx] = []
+                else:
+                    self._segment_words[active_idx] = []
+
+            words = self._segment_words.get(active_idx, [])
+            if words:
+                seg_start = 0.0
+                for i in range(active_idx):
+                    if i < len(self.controller.chunk_durations):
+                        seg_start += self.controller.chunk_durations[i]
+                sec_in_seg = max(0.0, self.controller.current_time - seg_start)
+
+                active_w_idx = -1
+                for widx, w in enumerate(words):
+                    if w.get('start', 0.0) <= sec_in_seg <= w.get('end', 0.0):
+                        active_w_idx = widx
+                        break
+
+                act_lbl = self._transcript_rows[active_idx].findChild(QLabel)
+                if act_lbl is not None and active_w_idx >= 0:
+                    lang_tag = str(chunks_meta[active_idx].get('lang', 'en')).upper()
+                    parts = [f"<span style='color: #818CF8; font-weight: 600;'>{active_idx + 1}. [{lang_tag}]</span>"]
+                    for widx, w in enumerate(words):
+                        w_esc = html.escape(str(w.get('word', '')))
+                        if widx < active_w_idx:
+                            parts.append(f"<span style='color: #9CA3AF;'>{w_esc}</span>")
+                        elif widx == active_w_idx:
+                            parts.append(f"<span style='background-color: #4F46E5; color: #FFFFFF; font-weight: 700; border-radius: 3px; padding: 1px 4px;'>{w_esc}</span>")
+                        else:
+                            parts.append(f"<span style='color: #F3F4F6;'>{w_esc}</span>")
+                    act_lbl.setText(' '.join(parts))
 
     def _sync_chunk_pills(self, statuses: List[str]):
         while self.chunk_pills_layout.count():
@@ -1937,6 +2007,40 @@ class FloatingPlayerWindow(QWidget):
             )
         self.adjustSize()
 
+    def _on_bookmark_clicked(self):
+        bdir = os.path.expanduser('~/.local/share/speak-aloud')
+        os.makedirs(bdir, exist_ok=True)
+        bpath = os.path.join(bdir, 'bookmarks.md')
+
+        idx = self.controller.active_segment_index
+        text = ''
+        if 0 <= idx < len(self.controller.chunks_meta):
+            text = str(self.controller.chunks_meta[idx].get('text', '')).strip()
+        if not text and hasattr(self, 'full_text') and self.full_text:
+            text = self.full_text.strip()
+        if not text:
+            text = self.title_lbl.text().strip() or 'Audio passage'
+
+        cur_t = format_time(self.controller.current_time)
+        tot_t = format_time(self.controller.total_duration)
+        now_str = time.strftime('%Y-%m-%d %H:%M:%S')
+
+        entry = (
+            f"### {now_str} — [{cur_t} / {tot_t}] (Speed {self.controller.speed:g}x)\n"
+            f"> {text}\n\n"
+        )
+        try:
+            with open(bpath, 'a', encoding='utf-8') as f:
+                f.write(entry)
+            self.btn_bookmark.setIcon(lucide_icon('check', '#34D399', 14))
+            self.btn_bookmark.setToolTip('★ Bookmarked!')
+            QTimer.singleShot(1600, lambda: (
+                self.btn_bookmark.setIcon(lucide_icon('bookmark', '#9CA3AF', 14)),
+                self.btn_bookmark.setToolTip('Bookmark current passage & timestamp (Hotkey: B)')
+            ))
+        except Exception:
+            pass
+
     def _on_ocr_clicked(self):
         subprocess.Popen(
             ['bash', os.path.join(SCRIPT_DIR, 'speak.sh'), '--ocr'],
@@ -1984,6 +2088,10 @@ class FloatingPlayerWindow(QWidget):
             return
         if key == Qt.Key.Key_Q:
             self._toggle_queue_window()
+            event.accept()
+            return
+        if key == Qt.Key.Key_B:
+            self._on_bookmark_clicked()
             event.accept()
             return
         if key == Qt.Key.Key_O:
