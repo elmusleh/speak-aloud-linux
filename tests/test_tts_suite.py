@@ -1377,6 +1377,74 @@ def test_wayland_capture_fallback(tmp_path, monkeypatch):
     assert res is True
 
 
+def test_edge_tts_auth_backoff_and_mirror_rotation(tmp_path):
+    import asyncio
+    from tts_synth_worker import (
+        is_edge_tts_auth_or_ratelimit,
+        compute_jittered_backoff,
+        rotate_edge_tts_identity,
+        synthesize_segment_async,
+        EDGE_USER_AGENTS,
+        EDGE_WSS_MIRRORS,
+    )
+
+    # 1. Test error classifier
+    class MockHttpError(Exception):
+        status = 403
+    assert is_edge_tts_auth_or_ratelimit(MockHttpError("Forbidden")) is True
+
+    class Mock429(Exception):
+        status = 429
+    assert is_edge_tts_auth_or_ratelimit(Mock429("Too Many Requests")) is True
+
+    assert is_edge_tts_auth_or_ratelimit(RuntimeError("WSServerHandshakeError: 403")) is True
+    assert is_edge_tts_auth_or_ratelimit(RuntimeError("SkewAdjustmentError: clock drift")) is True
+    assert is_edge_tts_auth_or_ratelimit(ValueError("Normal parsing issue")) is False
+
+    # 2. Test backoff calculation
+    b0 = compute_jittered_backoff(0, base=0.2, max_delay=1.0)
+    assert 0.2 <= b0 <= 1.0
+    b2 = compute_jittered_backoff(2, base=0.2, max_delay=1.0)
+    assert 0.5 <= b2 <= 1.0
+
+    # 3. Test identity rotation
+    r1 = rotate_edge_tts_identity(1)
+    assert r1.get('user_agent') == EDGE_USER_AGENTS[1]
+    assert EDGE_WSS_MIRRORS[1] in r1.get('url', '')
+
+    # 4. Async retry simulation with 403 error on first attempt
+    async def _test_retry():
+        out_mp3 = str(tmp_path / "mock_out.mp3")
+        attempts = 0
+        async def mock_communicate_stream(self):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("WSServerHandshakeError: 403 Forbidden")
+            yield {'type': 'audio', 'data': b'ID3\x03' + (b'x' * 256)}
+
+        import edge_tts
+        orig_stream = edge_tts.Communicate.stream
+        edge_tts.Communicate.stream = mock_communicate_stream
+        try:
+            res = await synthesize_segment_async(
+                text="Test backoff and retry.",
+                voice="en-US-ChristopherNeural",
+                rate="+0%",
+                output_path=out_mp3,
+                retries=2,
+                use_cache=False,
+            )
+            assert attempts == 2
+            assert res.get('ok') is True
+            assert res.get('engine') == 'edge-tts'
+        finally:
+            edge_tts.Communicate.stream = orig_stream
+
+    asyncio.run(_test_retry())
+
+
+
 
 
 

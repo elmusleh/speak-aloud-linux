@@ -621,6 +621,13 @@ generate_audio() {
 
         local err_msg=""
         if grep -qiE 'WSServerHandshakeError: 403|Invalid response status.*403|403.*Invalid response status' "$tmp_stderr"; then
+            if [ "$attempt" -lt 3 ]; then
+                delay=$(( attempt + 1 ))
+                [ -n "$OVERRIDE_TEXT" ] && echo "STATUS:RETRYING"
+                echo "RETRYING" > "$TTS_STATUS_FILE"
+                sleep "$delay"
+                continue
+            fi
             err_msg="Microsoft rejected the speech connection (HTTP 403). Update edge-tts with: pipx upgrade edge-tts"
         elif grep -q "NoAudioReceived" "$tmp_stderr"; then
             err_msg="The speech service returned no audio. Try different text or update edge-tts."

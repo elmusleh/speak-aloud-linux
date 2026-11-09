@@ -80,3 +80,4 @@
 - [x] 11. D-Bus / Socket Daemon IPC Rate Limiting & Input Sanitization (`MAX_MESSAGE_BYTES=1MB`, sliding-window rate limit, `tts_synth_worker.py`)
 - [x] 12. Wayland Native Screen Selection Fallback (`slurp` + `grim` fallback in `tts_ocr.py`)
 - [x] 13. Full automated verification test suite expanded to 56 tests (56/56 passed)
+- [x] 14. Edge TTS Auth Token Refresh Failure Backoff & Automatic Mirror Switching (`tts_synth_worker.py`, `speak.sh`) with 57 unit/integration tests passing (57/57 passed)

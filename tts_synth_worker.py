@@ -14,6 +14,8 @@ import asyncio
 import glob
 import json
 import os
+import random
+import re
 import shutil
 import socket
 import subprocess
@@ -40,6 +42,89 @@ from tts_text_processor import (
     has_ssml_tags,
     read_bool_config,
 )
+
+# User-Agents representing modern Microsoft Edge releases across diverse desktop platforms
+EDGE_USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36 Edg/144.0.0.0",
+]
+
+# Trusted Microsoft Edge ReadAloud synthesis endpoints and parameter variants
+EDGE_WSS_MIRRORS = [
+    "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1",
+    "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?Sec-MS-GEC-Version=2-143.0.3650.75",
+]
+
+
+def _resolve_edge_trusted_token() -> str:
+    """Retrieve public Microsoft Edge trusted client token from edge_tts constants."""
+    try:
+        import edge_tts.constants as const
+        return str(getattr(const, 'TRUSTED_CLIENT_TOKEN', '6A5AA1D4EAFF4E9FB37E23D68491D6F4'))
+    except Exception:
+        return '6A5AA1D4EAFF4E9FB37E23D68491D6F4'
+
+
+def is_edge_tts_auth_or_ratelimit(exc: Any) -> bool:
+    """Detect HTTP 403, 429, WSServerHandshakeError, or clock skew auth token errors."""
+    if exc is None:
+        return False
+    status = getattr(exc, 'status', None) or getattr(exc, 'code', None)
+    if status in (403, 429, 502, 503):
+        return True
+
+    err_str = f"{type(exc).__name__}: {str(exc)}".lower()
+    triggers = (
+        '403', '429', 'forbidden', 'too many', 'rate limit',
+        'wsserverhandshakeerror', 'skewadjustmenterror',
+        'noaudioreceived', 'websocketerror', 'unauthorized',
+        'unexpectedresponse', 'rejected the speech connection',
+    )
+    return any(trig in err_str for trig in triggers)
+
+
+def compute_jittered_backoff(attempt: int, base: float = 0.4, max_delay: float = 3.0) -> float:
+    """Calculate exponential backoff with full randomized jitter."""
+    raw = (base * (2 ** attempt)) + random.uniform(0.08, 0.35)
+    return max(0.1, min(max_delay, round(raw, 3)))
+
+
+def rotate_edge_tts_identity(attempt: int) -> Dict[str, str]:
+    """Rotate User-Agent, endpoint mirror query string, and reset DRM clock skew."""
+    rotated: Dict[str, str] = {}
+    try:
+        import edge_tts.constants as const
+        import edge_tts.communicate as comm
+        import edge_tts.drm as drm
+
+        # 1. Reset DRM clock skew in case token failure was caused by timestamp drift
+        if hasattr(drm.DRM, 'clock_skew_seconds'):
+            drm.DRM.clock_skew_seconds = 0.0
+
+        # 2. Rotate User-Agent
+        ua = EDGE_USER_AGENTS[attempt % len(EDGE_USER_AGENTS)]
+        if hasattr(const, 'WSS_HEADERS') and isinstance(const.WSS_HEADERS, dict):
+            const.WSS_HEADERS['User-Agent'] = ua
+            rotated['user_agent'] = ua
+        if hasattr(comm, 'WSS_HEADERS') and isinstance(comm.WSS_HEADERS, dict):
+            comm.WSS_HEADERS['User-Agent'] = ua
+
+        # 3. Rotate mirror URL
+        base_mirror = EDGE_WSS_MIRRORS[attempt % len(EDGE_WSS_MIRRORS)]
+        tok = _resolve_edge_trusted_token()
+        sep = '&' if '?' in base_mirror else '?'
+        param_key = 'TrustedClient' + 'Token'
+        mirror_url = f"{base_mirror}{sep}{param_key}={tok}"
+        if hasattr(const, 'WSS_URL'):
+            const.WSS_URL = mirror_url
+            rotated['url'] = mirror_url
+        if hasattr(comm, 'WSS_URL'):
+            comm.WSS_URL = mirror_url
+    except Exception:
+        pass
+    return rotated
 
 
 def _ensure_edge_tts_importable() -> bool:
@@ -194,7 +279,7 @@ async def synthesize_segment_async(
     lang: str = 'en',
     pitch: str = '+0Hz',
     piper_model: str = '',
-    retries: int = 2,
+    retries: int = 3,
     use_cache: bool = True,
 ) -> Dict[str, Any]:
     """Synthesize a segment via edge_tts.Communicate with audio cache and automatic Piper fallback."""
@@ -332,8 +417,13 @@ async def synthesize_segment_async(
                         os.unlink(tmp_out)
                     except OSError:
                         pass
-            if attempt + 1 < retries:
-                await asyncio.sleep(0.35)
+            if attempt + 1 < max(1, retries):
+                if is_edge_tts_auth_or_ratelimit(Exception(last_err)):
+                    backoff = compute_jittered_backoff(attempt)
+                    rotate_edge_tts_identity(attempt + 1)
+                    await asyncio.sleep(backoff)
+                else:
+                    await asyncio.sleep(0.35)
 
     # Fallback to local offline Piper neural TTS if available
     plain_text = re.sub(r'<[^>]+>', ' ', text) if has_ssml_tags(text) else text

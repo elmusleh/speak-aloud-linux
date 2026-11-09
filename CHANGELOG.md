@@ -2,6 +2,8 @@
 
 ## 2026-11-09
 
+- **Edge TTS Auth Token Refresh Failure Backoff & Mirror Switching (`tts_synth_worker.py`, `speak.sh`)**: Added intelligent detection of HTTP 403 / 429 Microsoft token authentication failures, WSServerHandshakeError, and clock skew adjustments (`is_edge_tts_auth_or_ratelimit`). Implemented exponential backoff with randomized jitter (`compute_jittered_backoff`), automatic DRM clock skew correction reset, and dynamic rotation across multiple modern Edge User-Agents and regional mirror endpoints (`rotate_edge_tts_identity`) across 3 retry attempts before falling back to local Piper neural synthesis. Added matching 403 retry backoff protection to CLI fallback in `speak.sh`.
+
 - **Reorderable Buttons, HUD Transparency, Audio Sink Selector & System Integrations (`tts_hud.py`, `tts-settings.py`, `tts_text_processor.py`, `speak.sh`, `tts_synth_worker.py`, `tts_ocr.py`)**:
   - **Reorderable Tools Drawer**: Added dynamic drawer tool reordering inside Settings Studio (`QListWidget` with Move Up/Down controls) and live layout reordering via `hud_drawer_order` in `FloatingPlayerWindow`.
   - **HUD Opacity & Transparency Slider**: Added slider in Settings Studio (50% to 100%, default 95%) with automatic 100% opacity boost on hover (`enterEvent`/`leaveEvent`).
