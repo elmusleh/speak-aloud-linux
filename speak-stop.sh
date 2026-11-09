@@ -23,7 +23,13 @@ if [ -S "$SOCKET" ]; then
     echo '{"command":["quit"]}' | socat - "$SOCKET" 2>/dev/null >/dev/null
 fi
 
-# Also terminate any in-flight speak.sh generation if lock is held
+# Also terminate any in-flight speak.sh generation if lock is held or PID recorded
+if [ -f "$RUNTIME_DIR/pid" ]; then
+    RECORDED_PID=$(cat "$RUNTIME_DIR/pid" 2>/dev/null)
+    if [ -n "$RECORDED_PID" ] && [ "$RECORDED_PID" != "$$" ]; then
+        kill -TERM "$RECORDED_PID" 2>/dev/null || true
+    fi
+fi
 if command -v lsof &>/dev/null && [ -f "$LOCK_FILE" ]; then
     for pid in $(lsof -t "$LOCK_FILE" 2>/dev/null); do
         if [ "$pid" != "$$" ]; then

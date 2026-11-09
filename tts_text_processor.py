@@ -353,10 +353,38 @@ class TTSSettingsStore:
         }
         return validated
 
+    LEGACY_KEY_MAP: Dict[str, str] = {
+        'voice': 'voice_en',
+        'arabic_voice': 'voice_ar',
+        'german_voice': 'voice_de',
+        'rate': 'rate_en',
+        'arabic_rate': 'rate_ar',
+        'german_rate': 'rate_de',
+        'source_language': 'translate_from',
+        'show_floating_player': 'show_hud',
+        'enable_replay': 'replay_at_end',
+        'filter_code': 'skip_code',
+        'pause_delay_ms': 'pause_delay',
+        'translate_target': 'translate_to',
+    }
+
     def load(self) -> Dict[str, str]:
         """Load settings from settings.json and overlay any flat config files."""
         os.makedirs(self.config_dir, mode=0o700, exist_ok=True)
         merged: Dict[str, Any] = dict(self.DEFAULTS)
+
+        # First read legacy flat files as base fallback
+        for legacy_key, schema_key in self.LEGACY_KEY_MAP.items():
+            lpath = os.path.join(self.config_dir, legacy_key)
+            if os.path.exists(lpath):
+                try:
+                    with open(lpath, 'r', encoding='utf-8') as f:
+                        val = f.readline().strip()
+                    if val:
+                        merged[schema_key] = val
+                except OSError:
+                    pass
+
         if os.path.exists(self.json_path):
             try:
                 with open(self.json_path, 'r', encoding='utf-8') as f:
@@ -371,21 +399,26 @@ class TTSSettingsStore:
             if os.path.exists(flat_path):
                 try:
                     with open(flat_path, 'r', encoding='utf-8') as f:
-                        merged[key] = f.read().strip()
+                        val = f.readline().strip()
+                    if val:
+                        merged[key] = val
                 except OSError:
                     pass
 
         return self.validate(merged)
 
     def save(self, updates: Dict[str, Any]) -> Dict[str, str]:
-        """Validate and atomically write both settings.json and flat key files."""
+        """Validate and atomically write both settings.json and flat key files (with trailing newline)."""
         current = self.load()
         current.update(updates or {})
         validated = self.validate(current)
         atomic_write_json(self.json_path, validated, mode=0o600)
         for key, val in validated.items():
             flat_path = os.path.join(self.config_dir, key)
-            atomic_write_text(flat_path, str(val), mode=0o600)
+            atomic_write_text(flat_path, f'{val}\n', mode=0o600)
+        for legacy_key, schema_key in self.LEGACY_KEY_MAP.items():
+            lpath = os.path.join(self.config_dir, legacy_key)
+            atomic_write_text(lpath, f'{validated[schema_key]}\n', mode=0o600)
         return validated
 
 # ── Regexes ───────────────────────────────────────────────────────────────────
@@ -612,7 +645,10 @@ def sanitize_for_voice(lang: str, text: str) -> str:
 
 
 def segment_by_language(text: str, source_lang: str = 'auto'):
-    if source_lang and source_lang != 'auto':
+    source_lang = (source_lang or 'auto').strip().lower()
+    if source_lang not in ('en', 'ar', 'de'):
+        source_lang = 'auto'
+    if source_lang != 'auto':
         cleaned = sanitize_for_voice(source_lang, text).strip()
         if speakable_count(cleaned) >= 2:
             return [(source_lang, cleaned)]

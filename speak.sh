@@ -248,8 +248,6 @@ PYEOF
 fi
 
 # ── Session lock: only one speak.sh playback at a time (held until exit) ──────
-rm -f "$INTERRUPT_FLAG"
-trap 'echo "IDLE" > "$TTS_STATUS_FILE"' EXIT
 exec 200>"$LOCK_FILE"
 
 if ! flock -n 200 2>/dev/null; then
@@ -259,20 +257,21 @@ if ! flock -n 200 2>/dev/null; then
         echo '{"command":["quit"]}' | socat - "$MPV_SOCKET" 2>/dev/null >/dev/null
     else
         pkill -f "mpv .*--input-ipc-server=$MPV_SOCKET" 2>/dev/null || true
-        for pid in $(lsof -t "$LOCK_FILE" 2>/dev/null); do
-            if [ "$pid" != "$$" ]; then
-                kill -TERM "$pid" 2>/dev/null || true
-                kill -TERM -"$pid" 2>/dev/null || true
-            fi
-        done
-        sleep 0.3
+    fi
+    if [ -f "$RUNTIME_DIR/pid" ]; then
+        OLD_PID=$(cat "$RUNTIME_DIR/pid" 2>/dev/null)
+        if [ -n "$OLD_PID" ] && [ "$OLD_PID" != "$$" ]; then
+            kill -TERM "$OLD_PID" 2>/dev/null || true
+        fi
     fi
     if ! flock -w 5 200 2>/dev/null; then
-        rm -f "$INTERRUPT_FLAG"
         exit 0
     fi
     rm -f "$INTERRUPT_FLAG"
+else
+    rm -f "$INTERRUPT_FLAG"
 fi
+echo "$$" > "$RUNTIME_DIR/pid"
 
 # Temporary file management
 declare -a TEMP_FILES=()
@@ -281,6 +280,12 @@ cleanup_temp_files() {
         rm -f "$temp_file" 2>/dev/null
     done
     rm -f "$MPV_SOCKET" 2>/dev/null
+    if [ -f "$RUNTIME_DIR/pid" ]; then
+        CUR_PID=$(cat "$RUNTIME_DIR/pid" 2>/dev/null)
+        if [ "$CUR_PID" = "$$" ]; then
+            rm -f "$RUNTIME_DIR/pid" 2>/dev/null || true
+        fi
+    fi
 }
 trap 'cleanup_temp_files; echo "IDLE" > "$TTS_STATUS_FILE"' EXIT
 
@@ -322,41 +327,78 @@ normalize_bool() {
     esac
 }
 
+# Safely read the first non-empty line from the first existing config file
+read_cfg_first() {
+    local def="$1"
+    shift
+    local f val
+    for f in "$@"; do
+        if [ -f "$f" ]; then
+            val=$(head -n 1 "$f" 2>/dev/null | tr -d '\r\n')
+            if [ -n "$val" ]; then
+                printf '%s' "$val"
+                return 0
+            fi
+        fi
+    done
+    printf '%s' "$def"
+}
+
+# Guarantee rate matches edge-tts requirement: ^[+-][0-9]+%$
+normalize_rate() {
+    local raw="${1:-}"
+    local def="${2:-+0%}"
+    local num
+    num=$(printf '%s' "$raw" | grep -oE '[+-]?[0-9]+' | head -n 1)
+    if [ -z "$num" ]; then
+        printf '%s' "$def"
+        return 0
+    fi
+    num=$((10#${num#+}))
+    [ "$num" -gt 100 ] && num=100
+    [ "$num" -lt -50 ] && num=-50
+    if [ "$num" -ge 0 ]; then
+        printf '+%d%%' "$num"
+    else
+        printf '%d%%' "$num"
+    fi
+}
+
 # ── Read config with CLI overrides taking priority ────────────────────────────
-EN_VOICE="${OVERRIDE_EN_VOICE:-$(cat "$CONFIG_DIR/voice_en" "$CONFIG_DIR/voice" 2>/dev/null | head -n1)}"
-EN_VOICE="${EN_VOICE:-en-US-ChristopherNeural}"
-AR_VOICE="${OVERRIDE_AR_VOICE:-$(cat "$CONFIG_DIR/voice_ar" "$CONFIG_DIR/arabic_voice" 2>/dev/null | head -n1)}"
-AR_VOICE="${AR_VOICE:-ar-SA-HamedNeural}"
-DE_VOICE="${OVERRIDE_DE_VOICE:-$(cat "$CONFIG_DIR/voice_de" "$CONFIG_DIR/german_voice" 2>/dev/null | head -n1)}"
-DE_VOICE="${DE_VOICE:-de-DE-ConradNeural}"
+EN_VOICE="${OVERRIDE_EN_VOICE:-$(read_cfg_first "en-US-ChristopherNeural" "$CONFIG_DIR/voice" "$CONFIG_DIR/voice_en")}"
+AR_VOICE="${OVERRIDE_AR_VOICE:-$(read_cfg_first "ar-SA-HamedNeural" "$CONFIG_DIR/arabic_voice" "$CONFIG_DIR/voice_ar")}"
+DE_VOICE="${OVERRIDE_DE_VOICE:-$(read_cfg_first "de-DE-ConradNeural" "$CONFIG_DIR/german_voice" "$CONFIG_DIR/voice_de")}"
 
-EN_RATE="${OVERRIDE_EN_RATE:-$(cat "$CONFIG_DIR/rate_en" "$CONFIG_DIR/rate" 2>/dev/null | head -n1)}"
-EN_RATE="${EN_RATE:-+50%}"
-AR_RATE="${OVERRIDE_AR_RATE:-$(cat "$CONFIG_DIR/rate_ar" "$CONFIG_DIR/arabic_rate" 2>/dev/null | head -n1)}"
-AR_RATE="${AR_RATE:-+30%}"
-DE_RATE="${OVERRIDE_DE_RATE:-$(cat "$CONFIG_DIR/rate_de" "$CONFIG_DIR/german_rate" 2>/dev/null | head -n1)}"
-DE_RATE="${DE_RATE:-+30%}"
+RAW_EN_RATE="${OVERRIDE_EN_RATE:-$(read_cfg_first "+50%" "$CONFIG_DIR/rate" "$CONFIG_DIR/rate_en")}"
+RAW_AR_RATE="${OVERRIDE_AR_RATE:-$(read_cfg_first "+30%" "$CONFIG_DIR/arabic_rate" "$CONFIG_DIR/rate_ar")}"
+RAW_DE_RATE="${OVERRIDE_DE_RATE:-$(read_cfg_first "+30%" "$CONFIG_DIR/german_rate" "$CONFIG_DIR/rate_de")}"
+EN_RATE=$(normalize_rate "$RAW_EN_RATE" "+50%")
+AR_RATE=$(normalize_rate "$RAW_AR_RATE" "+30%")
+DE_RATE=$(normalize_rate "$RAW_DE_RATE" "+30%")
 
-SOURCE_LANG="${OVERRIDE_SOURCE_LANG:-$(cat "$CONFIG_DIR/translate_from" "$CONFIG_DIR/source_language" 2>/dev/null | head -n1)}"
-SOURCE_LANG="${SOURCE_LANG:-auto}"
-RAW_TRANSLATE_ENABLED="${OVERRIDE_TRANSLATE_ENABLED:-$(cat "$CONFIG_DIR/translate_enabled" 2>/dev/null || echo "no")}"
+SOURCE_LANG="${OVERRIDE_SOURCE_LANG:-$(read_cfg_first "auto" "$CONFIG_DIR/source_language" "$CONFIG_DIR/translate_from")}"
+case "${SOURCE_LANG,,}" in
+    en|ar|de) SOURCE_LANG="${SOURCE_LANG,,}" ;;
+    *)        SOURCE_LANG="auto" ;;
+esac
+RAW_TRANSLATE_ENABLED="${OVERRIDE_TRANSLATE_ENABLED:-$(read_cfg_first "no" "$CONFIG_DIR/translate_enabled")}"
 TRANSLATE_ENABLED=$(normalize_bool "$RAW_TRANSLATE_ENABLED" "no")
-TRANSLATE_PROVIDER="${OVERRIDE_TRANSLATE_PROVIDER:-$(cat "$CONFIG_DIR/translate_provider" 2>/dev/null || echo "deepl")}"
-TRANSLATE_TARGET="${OVERRIDE_TRANSLATE_TARGET:-$(cat "$CONFIG_DIR/translate_to" "$CONFIG_DIR/translate_target" 2>/dev/null | head -n1)}"
-TRANSLATE_KEY="${OVERRIDE_TRANSLATE_KEY:-$(cat "$CONFIG_DIR/translate_api_key" 2>/dev/null || echo "")}"
+TRANSLATE_PROVIDER="${OVERRIDE_TRANSLATE_PROVIDER:-$(read_cfg_first "deepl" "$CONFIG_DIR/translate_provider")}"
+TRANSLATE_TARGET="${OVERRIDE_TRANSLATE_TARGET:-$(read_cfg_first "" "$CONFIG_DIR/translate_target" "$CONFIG_DIR/translate_to")}"
+TRANSLATE_KEY="${OVERRIDE_TRANSLATE_KEY:-$(read_cfg_first "" "$CONFIG_DIR/translate_api_key")}"
 
-RAW_PAUSE_PUNCT="${OVERRIDE_PAUSE_PUNCTUATION:-$(cat "$CONFIG_DIR/pause_punctuation" 2>/dev/null || echo "no")}"
+RAW_PAUSE_PUNCT="${OVERRIDE_PAUSE_PUNCTUATION:-$(read_cfg_first "no" "$CONFIG_DIR/pause_punctuation")}"
 PAUSE_PUNCTUATION=$(normalize_bool "$RAW_PAUSE_PUNCT" "no")
-PAUSE_DELAY_MS="${OVERRIDE_PAUSE_DELAY_MS:-$(cat "$CONFIG_DIR/pause_delay" "$CONFIG_DIR/pause_delay_ms" 2>/dev/null | head -n1)}"
+PAUSE_DELAY_MS="${OVERRIDE_PAUSE_DELAY_MS:-$(read_cfg_first "100" "$CONFIG_DIR/pause_delay_ms" "$CONFIG_DIR/pause_delay")}"
 if ! [[ "$PAUSE_DELAY_MS" =~ ^[0-9]+$ ]] || [ "$PAUSE_DELAY_MS" -lt 0 ] || [ "$PAUSE_DELAY_MS" -gt 2000 ]; then
     PAUSE_DELAY_MS=100
 fi
 
-FILTER_MARKDOWN=$(normalize_bool "$(cat "$CONFIG_DIR/filter_markdown" 2>/dev/null || echo "yes")" "yes")
-FILTER_URLS=$(normalize_bool "$(cat "$CONFIG_DIR/filter_urls" 2>/dev/null || echo "yes")" "yes")
-FILTER_CODE=$(normalize_bool "$(cat "$CONFIG_DIR/skip_code" "$CONFIG_DIR/filter_code" 2>/dev/null | head -n1 || echo "no")" "no")
-REPLACE_SYMBOLS=$(normalize_bool "$(cat "$CONFIG_DIR/replace_symbols" 2>/dev/null || echo "yes")" "yes")
-USE_LEXICON=$(normalize_bool "$(cat "$CONFIG_DIR/use_lexicon" 2>/dev/null || echo "yes")" "yes")
+FILTER_MARKDOWN=$(normalize_bool "$(read_cfg_first "yes" "$CONFIG_DIR/filter_markdown")" "yes")
+FILTER_URLS=$(normalize_bool "$(read_cfg_first "yes" "$CONFIG_DIR/filter_urls")" "yes")
+FILTER_CODE=$(normalize_bool "$(read_cfg_first "no" "$CONFIG_DIR/skip_code" "$CONFIG_DIR/filter_code")" "no")
+REPLACE_SYMBOLS=$(normalize_bool "$(read_cfg_first "yes" "$CONFIG_DIR/replace_symbols")" "yes")
+USE_LEXICON=$(normalize_bool "$(read_cfg_first "yes" "$CONFIG_DIR/use_lexicon")" "yes")
 
 # ── Optional: translate text before TTS ───────────────────────────────────────
 if [ "$TRANSLATE_ENABLED" = "yes" ] && [ -n "$TRANSLATE_TARGET" ] && [ -n "$TRANSLATE_KEY" ]; then
@@ -516,7 +558,9 @@ generate_audio() {
             fi
             err_msg="Rate limited by Microsoft TTS service. Try again later."
         else
-            err_msg="Failed to generate speech. Check your internet connection."
+            local actual_err
+            actual_err=$(tail -n 1 "$tmp_stderr" 2>/dev/null | tr -d '\r')
+            err_msg="Speech synthesis error: ${actual_err:-Failed to generate speech.}"
         fi
 
         # 3. Offline fallback: espeak-ng -> WAV/MP3 if both edge-tts and piper failed
@@ -598,6 +642,9 @@ FIRST_FILE=""
 CURRENT_IDX=-1
 
 for _ in $(seq 1 300); do
+    if [ -f "$INTERRUPT_FLAG" ]; then
+        exit 0
+    fi
     if [ -f "$WORK_DIR/seg_000.mp3" ] && [ -s "$WORK_DIR/seg_000.mp3" ]; then
         FIRST_FILE="$WORK_DIR/seg_000.mp3"
         CURRENT_IDX=0
@@ -611,8 +658,15 @@ for _ in $(seq 1 300); do
     sleep 0.05
 done
 
+if [ -f "$INTERRUPT_FLAG" ]; then
+    exit 0
+fi
+
 if [ -z "$FIRST_FILE" ]; then
     for _ in $(seq 1 300); do
+        if [ -f "$INTERRUPT_FLAG" ]; then
+            exit 0
+        fi
         FIRST_FILE=$(find "$WORK_DIR" -maxdepth 1 -name 'seg_*.mp3' | sort | head -1)
         if [ -n "$FIRST_FILE" ] && [ -s "$FIRST_FILE" ]; then
             FIRST_BASENAME=$(basename "$FIRST_FILE")
@@ -632,20 +686,23 @@ if [ -z "$FIRST_FILE" ]; then
     done
 fi
 
+if [ -f "$INTERRUPT_FLAG" ]; then
+    exit 0
+fi
+
 if [ -z "$FIRST_FILE" ]; then
     FAILED=0
     for pid in $PIDS; do
         wait "$pid" || FAILED=1
     done
+    if [ -f "$INTERRUPT_FLAG" ]; then
+        exit 0
+    fi
     ERR_MSG=$(cat "$WORK_DIR"/err_*.txt 2>/dev/null | grep -v '^+' | grep . | head -1)
     [ -n "$OVERRIDE_TEXT" ] && echo "STATUS:ERROR"
     echo "ERROR" > "$TTS_STATUS_FILE"
-    notify-send "TTS Error" "${ERR_MSG:-Failed to generate speech. Check your internet connection.}"
+    notify-send "TTS Error" "${ERR_MSG:-Failed to generate speech. Check your audio/network settings.}"
     exit 1
-fi
-
-if [ -f "$INTERRUPT_FLAG" ]; then
-    exit 0
 fi
 
 SILENCE_FILE=""
@@ -759,7 +816,7 @@ if [ "$FAILED" -ne 0 ]; then
     done
 fi
 
-if [ "$FAILED" -ne 0 ]; then
+if [ "$FAILED" -ne 0 ] && [ ! -f "$INTERRUPT_FLAG" ]; then
     ERR_MSG=$(cat "$WORK_DIR"/err_*.txt 2>/dev/null | grep -v '^+' | grep . | head -1)
     notify-send "TTS Warning" "${ERR_MSG:-Some segments failed to generate.}"
 fi

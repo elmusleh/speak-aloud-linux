@@ -247,3 +247,26 @@ def test_systemd_unit_file_valid():
     assert '[Service]' in content
     assert 'Restart=on-failure' in content
     assert 'tts-daemon.py' in content
+
+
+def test_config_newline_safety_and_legacy_sync(tmp_path):
+    from tts_text_processor import TTSSettingsStore, _format_rate_str
+    store = TTSSettingsStore(config_dir=str(tmp_path))
+    saved = store.save({'rate_en': '+45%', 'voice_en': 'en-US-ChristopherNeural', 'translate_from': 'auto'})
+    assert saved['rate_en'] == '+45%'
+
+    # Ensure all files end with newline so bash head/cat never concatenates adjacent tokens
+    rate_file = tmp_path / 'rate_en'
+    assert rate_file.read_bytes().endswith(b'\n')
+    assert rate_file.read_text().strip() == '+45%'
+
+    legacy_rate = tmp_path / 'rate'
+    assert legacy_rate.read_bytes().endswith(b'\n')
+    assert legacy_rate.read_text().strip() == '+45%'
+
+    # Test edge-tts rate string normalization
+    assert _format_rate_str('+45%') == '+45%'
+    assert _format_rate_str('45') == '+45%'
+    assert _format_rate_str('-20%') == '-20%'
+    assert _format_rate_str('+0%+50%') in ('+0%', '+50%')  # Recovers to valid edge-tts rate
+

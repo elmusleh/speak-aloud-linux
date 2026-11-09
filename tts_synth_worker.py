@@ -28,6 +28,7 @@ if SCRIPT_DIR not in sys.path:
 
 from tts_text_processor import (
     CONFIG_DIR,
+    _format_rate_str,
     ensure_runtime_symlinks,
     get_synth_socket_path,
 )
@@ -187,6 +188,13 @@ async def synthesize_segment_async(
     if not text or not text.strip():
         return {'ok': False, 'error': 'empty_text'}
 
+    # Normalize rate & voice so edge_tts.Communicate never raises ValueError
+    norm_rate = _format_rate_str(rate) if rate else '+0%'
+    norm_voice = (voice or 'en-US-ChristopherNeural').splitlines()[0].strip()
+    norm_lang = (lang or 'en').strip().lower()
+    if norm_lang not in ('en', 'ar', 'de'):
+        norm_lang = 'en'
+
     parent = os.path.dirname(os.path.abspath(output_path))
     os.makedirs(parent, mode=0o700, exist_ok=True)
 
@@ -198,7 +206,7 @@ async def synthesize_segment_async(
             fd, tmp_out = tempfile.mkstemp(prefix='.edge_', suffix='.mp3', dir=parent)
             os.close(fd)
             try:
-                comm = edge_tts.Communicate(text=text, voice=voice, rate=rate)
+                comm = edge_tts.Communicate(text=text, voice=norm_voice, rate=norm_rate)
                 await asyncio.wait_for(comm.save(tmp_out), timeout=18.0)
                 if os.path.isfile(tmp_out) and os.path.getsize(tmp_out) > 128:
                     os.replace(tmp_out, output_path)
