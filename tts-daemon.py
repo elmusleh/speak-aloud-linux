@@ -14,6 +14,7 @@ import logging.handlers
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -63,6 +64,21 @@ _STATE_LABELS = {
     'PLAYING':    '♪  Playing',
     'PAUSED':     '⏸  Paused',
 }
+
+
+def sd_notify(state: str) -> bool:
+    """Send a status notification or watchdog ping to systemd via NOTIFY_SOCKET."""
+    sock_addr = os.environ.get('NOTIFY_SOCKET')
+    if not sock_addr:
+        return False
+    if sock_addr.startswith('@'):
+        sock_addr = '\0' + sock_addr[1:]
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
+            sock.sendto(state.encode('utf-8'), sock_addr)
+        return True
+    except Exception:
+        return False
 
 
 def _setup_logging():
@@ -325,9 +341,12 @@ class QtTTSDaemon:
         self._build_tray(QSystemTrayIcon, QMenu)
 
         # Poll status & mpv IPC every 150ms for smooth timeline scrubber updates
+        self._last_watchdog_time = 0.0
+        self._last_scroll_idx = -1
         self.timer = QTimer()
         self.timer.timeout.connect(self._tick)
         self.timer.start(150)
+        sd_notify('READY=1\nSTATUS=QtTTSDaemon active')
 
         # Handle SIGINT / SIGTERM gracefully
         signal.signal(signal.SIGINT, lambda *_: self._on_quit())
@@ -551,8 +570,24 @@ class QtTTSDaemon:
             record_playback_activity(self._playing_accum_sec, words, spd)
             self._playing_accum_sec = 0.0
 
-        # Bluetooth headphone monitoring (every 1 second)
         now = time.time()
+
+        # Systemd watchdog heartbeat ping (every 10 seconds)
+        if now - getattr(self, '_last_watchdog_time', 0.0) >= 10.0:
+            self._last_watchdog_time = now
+            sd_notify('WATCHDOG=1')
+
+        # Speech-driven auto-scrolling in active window
+        if state == 'PLAYING':
+            cur_seg = getattr(self.controller, 'active_segment_index', 0)
+            if cur_seg != getattr(self, '_last_scroll_idx', -1):
+                if getattr(self, '_last_scroll_idx', -1) >= 0 and cur_seg > self._last_scroll_idx:
+                    self._check_auto_scroll()
+                self._last_scroll_idx = cur_seg
+        else:
+            self._last_scroll_idx = -1
+
+        # Bluetooth headphone monitoring (every 1 second)
         if now - getattr(self, '_last_bt_check', 0.0) >= 1.0:
             self._last_bt_check = now
             self._check_bluetooth_audio()
@@ -568,6 +603,22 @@ class QtTTSDaemon:
                 prune_runtime_dir(max_age_hours=24)
             except Exception:
                 pass
+
+    def _check_auto_scroll(self):
+        if not read_bool_config('auto_scroll_window', False):
+            return
+        xdotool = shutil.which('xdotool')
+        if not xdotool:
+            return
+        try:
+            # Send 2 gentle Down arrow keypresses to smoothly scroll active reader window
+            subprocess.Popen(
+                [xdotool, 'key', '--clearmodifiers', 'Down', 'Down'],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception as e:
+            self.log.debug('Auto-scroll keystroke failed: %s', e)
 
     def _check_bluetooth_audio(self):
         if not read_bool_config('auto_pause_bluetooth', True):

@@ -881,6 +881,10 @@ class TTSSettingsStore:
         'crossfade_audio': 'yes',
         'crossfade_duration': '40',
         'auto_pause_bluetooth': 'yes',
+        'adaptive_prosody': 'yes',
+        'auto_scroll_window': 'no',
+        'anki_deck': 'Default',
+        'anki_model': 'Basic',
     }
 
     def __init__(self, config_dir: Optional[str] = None):
@@ -947,6 +951,10 @@ class TTSSettingsStore:
             'crossfade_audio': _norm_yes_no(src.get('crossfade_audio'), True),
             'crossfade_duration': str(_parse_int_clamped(src.get('crossfade_duration'), 10, 200, 40)),
             'auto_pause_bluetooth': _norm_yes_no(src.get('auto_pause_bluetooth'), True),
+            'adaptive_prosody': _norm_yes_no(src.get('adaptive_prosody'), True),
+            'auto_scroll_window': _norm_yes_no(src.get('auto_scroll_window'), False),
+            'anki_deck': _sanitize_str(src.get('anki_deck'), 128, 'Default'),
+            'anki_model': _sanitize_str(src.get('anki_model'), 128, 'Basic'),
         }
         return validated
 
@@ -1085,6 +1093,35 @@ def speakable_count(s: str) -> int:
     return sum(1 for ch in s if unicodedata.category(ch)[0] in ('L', 'N'))
 
 
+def apply_adaptive_prosody(text: str) -> str:
+    """
+    Wrap parenthetical clauses and bracketed citations in <prosody pitch="-2Hz" rate="+5%">
+    to give natural conversational inflection and pacing to aside remarks and citations.
+    """
+    if not text:
+        return ''
+
+    def _wrap_parenthesis(m):
+        content = m.group(1).strip()
+        if not content or len(content) < 2 or '<prosody' in content or '<speak' in content:
+            return m.group(0)
+        return f'<prosody pitch="-2Hz" rate="+5%">({content})</prosody>'
+
+    def _wrap_bracket(m):
+        content = m.group(1).strip()
+        if not content or len(content) < 2 or '<prosody' in content or '<speak' in content:
+            return m.group(0)
+        return f'<prosody pitch="-2Hz" rate="+5%">[{content}]</prosody>'
+
+    # Wrap (parentheticals) and [brackets] between 2 and 160 characters
+    res = re.sub(r'\(([^()\n]{2,160})\)', _wrap_parenthesis, text)
+    res = re.sub(r'\[([^\[\]\n]{2,160})\]', _wrap_bracket, res)
+
+    # Insert slight breath pauses at semicolons
+    res = re.sub(r';\s+', '; <break time="150ms"/> ', res)
+    return res
+
+
 def clean_and_filter_text(
     text: str,
     filter_markdown: bool = True,
@@ -1094,6 +1131,7 @@ def clean_and_filter_text(
     use_lexicon: bool = True,
     lexicon: Optional[Dict[str, str]] = None,
     max_chars: int = 20000,
+    adaptive_prosody: bool = False,
 ) -> str:
     """Clean control characters, markdown formatting, URLs, technical symbols, and lexicon aliases."""
     if not text:
@@ -1160,6 +1198,9 @@ def clean_and_filter_text(
     if use_lexicon:
         text = apply_lexicon(text, lexicon=lexicon)
 
+    if adaptive_prosody:
+        text = apply_adaptive_prosody(text)
+
     # Normalize bullets and list items into clean sentence breaks so bullet lists split naturally
     text = re.sub(r'[•◦▪▸►●○]', '. ', text)
     text = re.sub(r'(?m)^\s*[-*+]\s+', '', text)
@@ -1171,7 +1212,7 @@ def clean_and_filter_text(
         if not line:
             lines.append('\n\n')
             continue
-        if line[-1] not in '.!?;:،؛؟。':
+        if line[-1] not in '.!?;:،؛؟。>':
             line = line + '.'
         lines.append(line)
     text = ' '.join(lines)
@@ -1519,6 +1560,7 @@ def process_and_write_segments(
     filter_code: bool = False,
     replace_symbols: bool = True,
     use_lexicon: bool = True,
+    adaptive_prosody: bool = True,
 ) -> int:
     os.makedirs(workdir, mode=0o700, exist_ok=True)
     ensure_runtime_symlinks()
@@ -1530,6 +1572,7 @@ def process_and_write_segments(
         filter_code=filter_code,
         replace_symbols=replace_symbols,
         use_lexicon=use_lexicon,
+        adaptive_prosody=adaptive_prosody,
     )
 
     if speakable_count(cleaned_text) < 2:
@@ -1607,6 +1650,7 @@ def main():
     parser.add_argument('--filter-code', default='no')
     parser.add_argument('--replace-symbols', default='yes')
     parser.add_argument('--use-lexicon', default='yes')
+    parser.add_argument('--adaptive-prosody', default='yes')
     args = parser.parse_args()
 
     if args.print_runtime_dir:
@@ -1633,6 +1677,7 @@ def main():
         filter_code=to_bool(args.filter_code, False),
         replace_symbols=to_bool(args.replace_symbols, True),
         use_lexicon=to_bool(args.use_lexicon, True),
+        adaptive_prosody=to_bool(args.adaptive_prosody, True),
     )
     print(count)
 

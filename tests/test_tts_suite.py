@@ -932,6 +932,122 @@ def test_daemon_tick_resilience(tmp_path, monkeypatch):
     assert daemon._state == 'IDLE'
 
 
+def test_adaptive_prosody_inflection():
+    from tts_text_processor import apply_adaptive_prosody, clean_and_filter_text
+    raw = "Here is an important point (for example, audio synthesis) and another note [citation needed]; check this."
+    inflected = apply_adaptive_prosody(raw)
+    assert '<prosody pitch="-2Hz" rate="+5%">(for example, audio synthesis)</prosody>' in inflected
+    assert '<prosody pitch="-2Hz" rate="+5%">[citation needed]</prosody>' in inflected
+    assert '; <break time="150ms"/> check this.' in inflected
+
+    cleaned = clean_and_filter_text(raw, adaptive_prosody=True)
+    assert '<prosody' in cleaned
+    assert '<break time=' in cleaned
+
+
+def test_systemd_sd_notify(monkeypatch, tmp_path):
+    import importlib.util
+    import socket
+    spec = importlib.util.spec_from_file_location('tts_daemon', os.path.join(SCRIPT_DIR, 'tts-daemon.py'))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    # When NOTIFY_SOCKET is unset, returns False safely without error
+    monkeypatch.delenv('NOTIFY_SOCKET', raising=False)
+    assert mod.sd_notify('READY=1') is False
+
+    # When NOTIFY_SOCKET is set to a listening Unix DGRAM socket
+    sock_path = str(tmp_path / 'notify.sock')
+    server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    server_sock.bind(sock_path)
+    monkeypatch.setenv('NOTIFY_SOCKET', sock_path)
+    try:
+        ok = mod.sd_notify('WATCHDOG=1')
+        assert ok is True
+        data, _ = server_sock.recvfrom(128)
+        assert data == b'WATCHDOG=1'
+    finally:
+        server_sock.close()
+
+
+def test_settings_store_new_schema_keys(tmp_path):
+    from tts_text_processor import TTSSettingsStore
+    store = TTSSettingsStore(config_dir=str(tmp_path))
+    val = store.validate({
+        'adaptive_prosody': 'yes',
+        'auto_scroll_window': 'yes',
+        'anki_deck': 'German Vocab',
+        'anki_model': 'Cloze',
+    })
+    assert val['adaptive_prosody'] == 'yes'
+    assert val['auto_scroll_window'] == 'yes'
+    assert val['anki_deck'] == 'German Vocab'
+    assert val['anki_model'] == 'Cloze'
+
+
+def test_anki_export_tsv_fallback(tmp_path):
+    from tts_anki import export_to_anki
+    audio_file = tmp_path / 'seg_001.mp3'
+    audio_file.write_bytes(b'FAKE_MP3_DATA')
+
+    res = export_to_anki(
+        front="Guten Morgen",
+        back="Good morning",
+        audio_path=str(audio_file),
+        deck="German",
+        data_dir=str(tmp_path / 'anki'),
+    )
+    assert res['success'] is True
+    assert res['method'] in ('ankiconnect', 'tsv_fallback')
+    if res['method'] == 'tsv_fallback':
+        tsv_file = tmp_path / 'anki' / 'anki_import.tsv'
+        assert tsv_file.exists()
+        content = tsv_file.read_text(encoding='utf-8')
+        assert 'Guten Morgen' in content
+        assert '[sound:seg_001.mp3]' in content
+        assert 'Good morning' in content
+
+
+def test_tts_whisper_helpers():
+    from tts_whisper import clean_text_for_comparison
+    norm = clean_text_for_comparison("Hello, World! (123) ...")
+    assert norm == "hello world 123"
+
+
+def test_slider_hover_preview_signal():
+    from PyQt6.QtWidgets import QApplication
+    from PyQt6.QtCore import QPoint, QPointF, QEvent, Qt
+    from PyQt6.QtGui import QMouseEvent
+    from tts_hud import ClickJumpSlider
+    _app = QApplication.instance() or QApplication([])
+
+    slider = ClickJumpSlider()
+    received = []
+    slider.hoverPreview.connect(lambda ratio, pt: received.append((ratio, pt)))
+
+    ev = QMouseEvent(
+        QEvent.Type.MouseMove,
+        QPointF(50.0, 10.0),
+        QPointF(200.0, 300.0),
+        Qt.MouseButton.NoButton,
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    slider.mouseMoveEvent(ev)
+    assert len(received) == 1
+    assert 0.0 <= received[0][0] <= 1.0
+    assert received[0][1] == QPoint(200, 300)
+
+
+def test_reader_sandbox_url_fetch():
+    from tts_reader import extract_from_url
+    res = extract_from_url('https://example.com', timeout=5.0, use_sandbox=True)
+    assert isinstance(res, dict)
+    assert 'Example Domain' in res.get('title', '')
+    assert 'documentation examples' in res.get('text', '').lower() or 'domain' in res.get('text', '').lower()
+
+
+
 
 
 

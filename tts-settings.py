@@ -13,8 +13,9 @@ import os
 import re
 import subprocess
 import sys
+import threading
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QCursor
 from PyQt6.QtWidgets import (
     QApplication,
@@ -427,9 +428,12 @@ class TTSSettingsWindow(QDialog):
         self.ed_lex_word.setPlaceholderText('Word (e.g. CUDA)')
         self.ed_lex_alias = QLineEdit()
         self.ed_lex_alias.setPlaceholderText('Phonetic alias (e.g. koo-duh)')
-        btn_test_pronounce = QPushButton('Verify Pronunciation')
+        btn_speak_preview = QPushButton('🔊 Listen Preview')
+        btn_speak_preview.setObjectName('secondaryBtn')
+        btn_speak_preview.clicked.connect(self._speak_lexicon_preview)
+        btn_test_pronounce = QPushButton('Verify with Whisper AI')
         btn_test_pronounce.setObjectName('secondaryBtn')
-        btn_test_pronounce.clicked.connect(self._verify_pronunciation)
+        btn_test_pronounce.clicked.connect(self._verify_with_whisper)
         btn_add_to_lexicon = QPushButton('Add to Lexicon')
         btn_add_to_lexicon.setObjectName('secondaryBtn')
         btn_add_to_lexicon.clicked.connect(self._add_to_lexicon)
@@ -438,6 +442,7 @@ class TTSSettingsWindow(QDialog):
         btn_import_lex.clicked.connect(self._import_dev_lexicon)
         lex_test_box.addWidget(self.ed_lex_word)
         lex_test_box.addWidget(self.ed_lex_alias)
+        lex_test_box.addWidget(btn_speak_preview)
         lex_test_box.addWidget(btn_test_pronounce)
         lex_test_box.addWidget(btn_add_to_lexicon)
         lex_test_box.addWidget(btn_import_lex)
@@ -456,9 +461,35 @@ class TTSSettingsWindow(QDialog):
         obs_row.addWidget(self.ed_obs_vault, 1)
         layout.addLayout(obs_row)
 
+        # Anki Spaced Repetition Integration
+        sec_anki = QLabel('Anki Spaced Repetition Integration (Flashcards)')
+        sec_anki.setProperty('class', 'sectionHeader')
+        layout.addWidget(sec_anki)
+        anki_row = QHBoxLayout()
+        anki_deck_lbl = QLabel('Anki Deck:')
+        anki_deck_lbl.setStyleSheet('font-size: 11px;')
+        anki_row.addWidget(anki_deck_lbl)
+        self.ed_anki_deck = QLineEdit()
+        self.ed_anki_deck.setPlaceholderText('Default')
+        anki_row.addWidget(self.ed_anki_deck)
+
+        anki_model_lbl = QLabel('Card Model:')
+        anki_model_lbl.setStyleSheet('font-size: 11px;')
+        anki_row.addWidget(anki_model_lbl)
+        self.ed_anki_model = QLineEdit()
+        self.ed_anki_model.setPlaceholderText('Basic')
+        anki_row.addWidget(self.ed_anki_model)
+        layout.addLayout(anki_row)
+
         sec3 = QLabel('Cadence & Punctuation Pauses')
         sec3.setProperty('class', 'sectionHeader')
         layout.addWidget(sec3)
+
+        self.chk_adaptive_prosody = QCheckBox('Adaptive Pitch & Speed Prosody (inflect parentheticals and bracketed notes)')
+        layout.addWidget(self.chk_adaptive_prosody)
+
+        self.chk_auto_scroll = QCheckBox('Auto-Scroll Active Window with Speech (xdotool Down key on paragraph boundaries)')
+        layout.addWidget(self.chk_auto_scroll)
 
         self.chk_pause_punct = QCheckBox('Insert extra silence between major punctuation clauses')
         layout.addWidget(self.chk_pause_punct)
@@ -634,6 +665,10 @@ class TTSSettingsWindow(QDialog):
             theme_val = 'auto'
         self._set_combo_by_data(self.cb_theme, theme_val)
         self.ed_obs_vault.setText(read_cfg('obsidian_vault', ''))
+        self.ed_anki_deck.setText(read_cfg('anki_deck', 'Default'))
+        self.ed_anki_model.setText(read_cfg('anki_model', 'Basic'))
+        self.chk_adaptive_prosody.setChecked(read_bool_cfg('adaptive_prosody', True))
+        self.chk_auto_scroll.setChecked(read_bool_cfg('auto_scroll_window', False))
         self.chk_filter_md.setChecked(read_bool_cfg('filter_markdown', True))
         self.chk_filter_urls.setChecked(read_bool_cfg('filter_urls', True))
         self.chk_filter_code.setChecked(read_bool_cfg('skip_code', read_bool_cfg('filter_code', False)))
@@ -667,6 +702,10 @@ class TTSSettingsWindow(QDialog):
         ui_theme = self.cb_theme.currentData() or 'auto'
         pitch_val = f'{self.sl_pitch.value():+d}Hz'
         obs_vault = self.ed_obs_vault.text().strip()
+        anki_deck = self.ed_anki_deck.text().strip() or 'Default'
+        anki_model = self.ed_anki_model.text().strip() or 'Basic'
+        adaptive_prosody = 'yes' if self.chk_adaptive_prosody.isChecked() else 'no'
+        auto_scroll = 'yes' if self.chk_auto_scroll.isChecked() else 'no'
         f_md = 'yes' if self.chk_filter_md.isChecked() else 'no'
         f_urls = 'yes' if self.chk_filter_urls.isChecked() else 'no'
         f_code = 'yes' if self.chk_filter_code.isChecked() else 'no'
@@ -711,6 +750,10 @@ class TTSSettingsWindow(QDialog):
             'encrypt_audio_cache': encrypt_c,
             'ui_theme': ui_theme,
             'obsidian_vault': obs_vault,
+            'anki_deck': anki_deck,
+            'anki_model': anki_model,
+            'adaptive_prosody': adaptive_prosody,
+            'auto_scroll_window': auto_scroll,
         })
 
         # Also maintain legacy flat filenames for backward compatibility
@@ -729,9 +772,61 @@ class TTSSettingsWindow(QDialog):
         write_cfg('ui_theme', ui_theme)
         write_cfg('pitch', pitch_val)
         write_cfg('obsidian_vault', obs_vault)
+        write_cfg('anki_deck', anki_deck)
+        write_cfg('anki_model', anki_model)
+        write_cfg('adaptive_prosody', adaptive_prosody)
+        write_cfg('auto_scroll_window', auto_scroll)
         write_cfg('crossfade_audio', crossfade)
         write_cfg('auto_pause_bluetooth', pause_bt)
         write_cfg('encrypt_audio_cache', encrypt_c)
+
+    def _speak_lexicon_preview(self):
+        word = self.ed_lex_word.text().strip()
+        alias = self.ed_lex_alias.text().strip()
+        if not word and not alias:
+            self._set_status('Please enter a word or phonetic alias to listen.', is_error=True)
+            return
+        test_txt = alias if alias else word
+        self._set_status(f"🔊 Playing pronunciation: '{test_txt}'...")
+        speak_sh = os.path.join(SCRIPT_DIR, 'speak.sh')
+        subprocess.Popen(
+            ['bash', speak_sh, '--text', test_txt],
+            env=get_sanitized_env(),
+        )
+
+    def _verify_with_whisper(self):
+        word = self.ed_lex_word.text().strip()
+        alias = self.ed_lex_alias.text().strip()
+        if not word and not alias:
+            self._set_status('Please enter a word or phonetic alias to verify with Whisper AI.', is_error=True)
+            return
+
+        spoken_text = alias if alias else word
+        self._set_status(f"Whisper AI verifying '{spoken_text}'...")
+
+        def _worker():
+            try:
+                from tts_whisper import verify_pronunciation_with_whisper
+                active_lang = self.cb_source_lang.currentData() or 'en'
+                active_voice = self.cb_en_voice.currentData() or 'en-US-ChristopherNeural'
+                res = verify_pronunciation_with_whisper(
+                    text=spoken_text,
+                    voice=active_voice,
+                    lang=active_lang if active_lang != 'auto' else 'en',
+                )
+                score = res.get('match_score', 0.0)
+                trans = res.get('transcribed', '')
+                is_match = res.get('is_match', False)
+                if res.get('success'):
+                    status_msg = f"Whisper STT: '{trans}' | Accuracy: {score}% {'(✓ Match)' if is_match else '(Needs adjustment)'}"
+                    QTimer.singleShot(0, lambda: self._set_status(status_msg, is_error=not is_match))
+                else:
+                    err = res.get('error', 'Failed')
+                    QTimer.singleShot(0, lambda: self._set_status(f"Whisper error: {err}", is_error=True))
+            except Exception as e:
+                QTimer.singleShot(0, lambda: self._set_status(f"Whisper error: {e}", is_error=True))
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _verify_pronunciation(self):
         word = self.ed_lex_word.text().strip()

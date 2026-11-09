@@ -257,7 +257,8 @@ async def synthesize_segment_async(
                 if has_ssml_tags(text):
                     s_clean = text.strip()
                     if not s_clean.startswith('<speak'):
-                        speech_text = f'<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="en-US">{text}</speak>'
+                        safe_body = re.sub(r'&(?!(?:amp|lt|gt|quot|apos|#\d+);)', '&amp;', text)
+                        speech_text = f'<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="en-US">{safe_body}</speak>'
                 comm = edge_tts.Communicate(
                     text=speech_text,
                     voice=norm_voice,

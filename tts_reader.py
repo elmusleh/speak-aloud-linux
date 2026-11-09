@@ -241,10 +241,43 @@ def extract_from_epub(epub_path: str) -> List[Dict[str, str]]:
     return results
 
 
-def extract_from_url(url: str, timeout: float = 10.0) -> Dict[str, str]:
+def extract_from_url(url: str, timeout: float = 10.0, use_sandbox: bool = True) -> Dict[str, str]:
     """Fetch article webpage and extract clean readable text."""
     if not url.startswith(('http://', 'https://')):
         url = 'https://' + url
+
+    # Sandbox Isolation via Bubblewrap: isolate home and private credentials
+    if use_sandbox and os.environ.get('SPEAK_ALOUD_SANDBOXED') != '1':
+        bwrap = shutil.which('bwrap')
+        if bwrap:
+            try:
+                cmd = [
+                    bwrap,
+                    '--ro-bind', '/', '/',
+                    '--tmpfs', '/home',
+                    '--tmpfs', '/tmp',
+                    '--proc', '/proc',
+                    '--dev', '/dev',
+                    '--unshare-all',
+                    '--share-net',
+                    '--setenv', 'SPEAK_ALOUD_SANDBOXED', '1',
+                    sys.executable,
+                    os.path.abspath(__file__),
+                    '--sandbox-fetch', url,
+                ]
+                proc = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout + 3.0,
+                )
+                if proc.returncode == 0 and proc.stdout.strip():
+                    data = json.loads(proc.stdout)
+                    if isinstance(data, dict) and 'text' in data:
+                        return data
+            except Exception:
+                # If sandbox execution fails for any reason, safely fall through to direct fetch
+                pass
 
     headers = {
         'User-Agent': (
@@ -456,8 +489,14 @@ def main():
     parser.add_argument('--bundle', metavar='OUTPUT_FILE', help='Package all extracted chapters into a single MP3 or M4B audiobook')
     parser.add_argument('--resume', action='store_true', default=True, help='Resume from last saved reading position')
     parser.add_argument('--reset', action='store_true', help='Reset reading progress and start from chapter 1')
+    parser.add_argument('--sandbox-fetch', help=argparse.SUPPRESS)
 
     args = parser.parse_args()
+
+    if args.sandbox_fetch:
+        doc = extract_from_url(args.sandbox_fetch, use_sandbox=False)
+        print(json.dumps(doc))
+        return
 
     docs: List[Dict[str, str]] = []
 

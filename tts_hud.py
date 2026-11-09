@@ -1386,13 +1386,15 @@ class MPVTimelineController:
 # ── Custom Click-to-Seek Slider ───────────────────────────────────────────────
 
 class ClickJumpSlider(QSlider):
-    """QSlider that supports direct click-anywhere-to-seek and smooth dragging."""
+    """QSlider that supports direct click-anywhere-to-seek, smooth dragging, and sentence hover preview."""
     seekRequested = pyqtSignal(float)
+    hoverPreview = pyqtSignal(float, QPoint)
 
     def __init__(self, parent=None):
         super().__init__(Qt.Orientation.Horizontal, parent)
         self.setRange(0, 1000)
         self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.setMouseTracking(True)
         self._dragging = False
 
     def is_dragging(self) -> bool:
@@ -1408,12 +1410,23 @@ class ClickJumpSlider(QSlider):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        val = self._pixel_pos_to_value(event.pos())
+        ratio = max(0.0, min(1.0, val / 1000.0))
+        pt = event.globalPosition().toPoint() if hasattr(event, 'globalPosition') else event.globalPos()
+        self.hoverPreview.emit(ratio, pt)
         if self._dragging:
-            val = self._pixel_pos_to_value(event.pos())
             self.setValue(val)
             event.accept()
             return
-        super().mouseMoveEvent(event)
+        try:
+            super().mouseMoveEvent(event)
+        except TypeError:
+            pass
+
+    def leaveEvent(self, event):
+        from PyQt6.QtWidgets import QToolTip
+        QToolTip.hideText()
+        super().leaveEvent(event)
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton and self._dragging:
@@ -1899,6 +1912,11 @@ class FloatingPlayerWindow(QWidget):
         self.btn_bookmark.clicked.connect(self._on_bookmark_clicked)
         header_row.addWidget(self.btn_bookmark)
 
+        # Export to Anki Flashcard (layers)
+        self.btn_anki = self._make_util_btn('layers', 'Export passage to Anki Flashcard (Hotkey: A)')
+        self.btn_anki.clicked.connect(self._on_anki_clicked)
+        header_row.addWidget(self.btn_anki)
+
         # Sleep / Pomodoro Timer (moon)
         self.btn_sleep = self._make_util_btn('moon', 'Sleep Timer: Off (Click / Z to cycle: 15m, 30m, 45m, 60m, End)')
         self.btn_sleep.setCheckable(True)
@@ -1940,6 +1958,7 @@ class FloatingPlayerWindow(QWidget):
         self.slider.setObjectName('seekSlider')
         self.slider.valueChanged.connect(self._on_slider_moved)
         self.slider.seekRequested.connect(self._on_seek_requested)
+        self.slider.hoverPreview.connect(self._on_slider_hover_preview)
         progress_row.addWidget(self.slider, 1)
 
         self.lbl_duration = QLabel('0:00')
@@ -2111,6 +2130,7 @@ class FloatingPlayerWindow(QWidget):
             getattr(self, 'btn_ocr', None),
             getattr(self, 'btn_save', None),
             getattr(self, 'btn_bookmark', None),
+            getattr(self, 'btn_anki', None),
             getattr(self, 'btn_sleep', None),
             getattr(self, 'btn_settings', None),
             getattr(self, 'btn_close', None),
@@ -2731,6 +2751,76 @@ class FloatingPlayerWindow(QWidget):
                 self.btn_bookmark.setToolTip('Bookmark current passage & timestamp (Hotkey: B)')
             ))
 
+    def _on_anki_clicked(self):
+        from tts_anki import export_to_anki
+
+        idx = self.controller.active_segment_index
+        text = ''
+        if 0 <= idx < len(self.controller.chunks_meta):
+            text = str(self.controller.chunks_meta[idx].get('text', '')).strip()
+        if not text and hasattr(self, 'full_text') and self.full_text:
+            text = self.full_text.strip()
+        if not text:
+            text = self.title_lbl.text().strip() or 'Audio passage'
+
+        pad = f'{idx:03d}'
+        mp3_path = os.path.join(WORK_DIR, f'seg_{pad}.mp3')
+        if not os.path.isfile(mp3_path):
+            mp3_path = None
+
+        res = export_to_anki(front=text, audio_path=mp3_path)
+        if res.get('success'):
+            method_str = 'Anki' if res.get('method') == 'ankiconnect' else 'TSV'
+            self.btn_anki.setIcon(lucide_icon('check', '#34D399', 14))
+            self.btn_anki.setToolTip(f'✓ Exported to {method_str}!')
+            QTimer.singleShot(1600, lambda: (
+                self.btn_anki.setIcon(lucide_icon('layers', '#9CA3AF', 14)),
+                self.btn_anki.setToolTip('Export passage to Anki Flashcard (Hotkey: A)')
+            ))
+        else:
+            self.btn_anki.setIcon(lucide_icon('alert-circle', '#F87171', 14))
+            self.btn_anki.setToolTip(f"Export failed: {res.get('error', 'Unknown')}")
+            QTimer.singleShot(2000, lambda: (
+                self.btn_anki.setIcon(lucide_icon('layers', '#9CA3AF', 14)),
+                self.btn_anki.setToolTip('Export passage to Anki Flashcard (Hotkey: A)')
+            ))
+
+    def _on_slider_hover_preview(self, ratio: float, global_pos: QPoint):
+        from PyQt6.QtWidgets import QToolTip
+        tot = getattr(self.controller, 'total_duration', 0.0) or 0.0
+        target_sec = ratio * tot
+        chunks = getattr(self.controller, 'chunks_meta', []) or []
+
+        snippet = ''
+        lang = ''
+        target_idx = 0
+        if chunks:
+            if tot > 0:
+                accum = 0.0
+                for idx, c in enumerate(chunks):
+                    dur = float(c.get('est_duration', 2.0))
+                    if accum + dur >= target_sec or idx == len(chunks) - 1:
+                        snippet = str(c.get('text', '')).strip()
+                        lang = str(c.get('lang', 'en')).upper()
+                        target_idx = idx
+                        break
+                    accum += dur
+            else:
+                idx = min(len(chunks) - 1, max(0, int(ratio * len(chunks))))
+                snippet = str(chunks[idx].get('text', '')).strip()
+                lang = str(chunks[idx].get('lang', 'en')).upper()
+                target_idx = idx
+
+        if snippet:
+            if len(snippet) > 85:
+                snippet = snippet[:82].rstrip() + '…'
+            time_str = f"{format_time(target_sec)} / {format_time(tot)}"
+            tip = f"⏱ {time_str} (#{target_idx + 1})\n[{lang}] {snippet}"
+        else:
+            tip = f"⏱ {format_time(target_sec)} / {format_time(tot)}"
+
+        QToolTip.showText(global_pos, tip, self.slider)
+
     def _cycle_sleep_timer(self):
         cycle = [0, 15 * 60, 30 * 60, 45 * 60, 60 * 60, -1]
         cur = self.sleep_timer_seconds if getattr(self, 'sleep_timer_mode', 0) != -1 else -1
@@ -2855,6 +2945,10 @@ class FloatingPlayerWindow(QWidget):
             return
         if key == Qt.Key.Key_B:
             self._on_bookmark_clicked()
+            event.accept()
+            return
+        if key == Qt.Key.Key_A:
+            self._on_anki_clicked()
             event.accept()
             return
         if key == Qt.Key.Key_Z:

@@ -448,6 +448,7 @@ FILTER_URLS=$(normalize_bool "$(read_cfg_first "yes" "$CONFIG_DIR/filter_urls")"
 FILTER_CODE=$(normalize_bool "$(read_cfg_first "no" "$CONFIG_DIR/skip_code" "$CONFIG_DIR/filter_code")" "no")
 REPLACE_SYMBOLS=$(normalize_bool "$(read_cfg_first "yes" "$CONFIG_DIR/replace_symbols")" "yes")
 USE_LEXICON=$(normalize_bool "$(read_cfg_first "yes" "$CONFIG_DIR/use_lexicon")" "yes")
+ADAPTIVE_PROSODY=$(normalize_bool "$(read_cfg_first "yes" "$CONFIG_DIR/adaptive_prosody")" "yes")
 
 # ── Optional: translate text before TTS ───────────────────────────────────────
 if [ "$TRANSLATE_ENABLED" = "yes" ] && [ -n "$TRANSLATE_TARGET" ] && [ -n "$TRANSLATE_KEY" ]; then
@@ -480,7 +481,8 @@ SEG_COUNT=$(printf '%s' "$TEXT" | python3 "$SCRIPT_DIR/tts_text_processor.py" \
     --filter-urls "$FILTER_URLS" \
     --filter-code "$FILTER_CODE" \
     --replace-symbols "$REPLACE_SYMBOLS" \
-    --use-lexicon "$USE_LEXICON" 2>/dev/null)
+    --use-lexicon "$USE_LEXICON" \
+    --adaptive-prosody "$ADAPTIVE_PROSODY" 2>/dev/null)
 
 if [ -z "$SEG_COUNT" ] || ! [ "$SEG_COUNT" -ge 1 ] 2>/dev/null; then
     if [ -n "$OVERRIDE_TEXT" ]; then
