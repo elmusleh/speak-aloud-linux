@@ -1,0 +1,10 @@
+{
+    "uuid": "speak-aloud@steve",
+    "name": "Speak a Loud TTS",
+    "description": "Cinnamon panel controls, live status, and shortcuts for Speak a Loud Universal TTS.",
+    "version": "1.0.0",
+    "max-instances": 1,
+    "multiversion": false,
+    "author": "steve",
+    "icon": "audio-volume-high"
+}

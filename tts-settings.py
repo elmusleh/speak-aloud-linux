@@ -10,6 +10,7 @@ translation, audio cache management, and a live Quick-Speak test bench.
 import glob
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -43,6 +44,7 @@ from tts_text_processor import (
     CONFIG_DIR,
     TTSSettingsStore,
     atomic_write_text,
+    get_sanitized_env,
     load_lexicon,
     save_lexicon,
 )
@@ -333,6 +335,15 @@ class TTSSettingsWindow(QDialog):
         self.sl_speed.valueChanged.connect(lambda v: self.lbl_speed.setText(f'{v / 100.0:.2f}x'))
         form.addRow('Player Speed Multiplier:', self._wrap_slider(self.sl_speed, self.lbl_speed))
 
+        # Speech pitch modulation
+        self.sl_pitch = QSlider(Qt.Orientation.Horizontal)
+        self.sl_pitch.setRange(-25, 25)
+        self.sl_pitch.setSingleStep(1)
+        self.lbl_pitch = QLabel('+0Hz')
+        self.lbl_pitch.setMinimumWidth(48)
+        self.sl_pitch.valueChanged.connect(lambda v: self.lbl_pitch.setText(f'{v:+d}Hz'))
+        form.addRow('Speech Pitch Offset:', self._wrap_slider(self.sl_pitch, self.lbl_pitch))
+
         return w
 
     def _build_player_filter_tab(self) -> QWidget:
@@ -397,6 +408,37 @@ class TTSSettingsWindow(QDialog):
         self.txt_lexicon.setPlaceholderText('term = spoken alias (one per line, e.g. kubectl = kube control)')
         self.txt_lexicon.setMaximumHeight(68)
         layout.addWidget(self.txt_lexicon)
+
+        # Pronunciation verification & testing loop
+        lex_test_box = QHBoxLayout()
+        self.ed_lex_word = QLineEdit()
+        self.ed_lex_word.setPlaceholderText('Word (e.g. CUDA)')
+        self.ed_lex_alias = QLineEdit()
+        self.ed_lex_alias.setPlaceholderText('Phonetic alias (e.g. koo-duh)')
+        btn_test_pronounce = QPushButton('Verify Pronunciation')
+        btn_test_pronounce.setObjectName('secondaryBtn')
+        btn_test_pronounce.clicked.connect(self._verify_pronunciation)
+        btn_add_to_lexicon = QPushButton('Add to Lexicon')
+        btn_add_to_lexicon.setObjectName('secondaryBtn')
+        btn_add_to_lexicon.clicked.connect(self._add_to_lexicon)
+        lex_test_box.addWidget(self.ed_lex_word)
+        lex_test_box.addWidget(self.ed_lex_alias)
+        lex_test_box.addWidget(btn_test_pronounce)
+        lex_test_box.addWidget(btn_add_to_lexicon)
+        layout.addLayout(lex_test_box)
+
+        # Obsidian Vault Integration for Bookmarks
+        sec_obs = QLabel('Obsidian Knowledge Base Integration (Bookmark Export)')
+        sec_obs.setProperty('class', 'sectionHeader')
+        layout.addWidget(sec_obs)
+        obs_row = QHBoxLayout()
+        obs_lbl = QLabel('Obsidian Vault Path / Name:')
+        obs_lbl.setStyleSheet('font-size: 11px;')
+        obs_row.addWidget(obs_lbl)
+        self.ed_obs_vault = QLineEdit()
+        self.ed_obs_vault.setPlaceholderText('e.g. ~/Documents/Notes or Vault Name (leave blank to use bookmarks.md only)')
+        obs_row.addWidget(self.ed_obs_vault, 1)
+        layout.addLayout(obs_row)
 
         sec3 = QLabel('Cadence & Punctuation Pauses')
         sec3.setProperty('class', 'sectionHeader')
@@ -556,6 +598,15 @@ class TTSSettingsWindow(QDialog):
             spd = 1.0
         self.sl_speed.setValue(max(50, min(200, int(round(spd * 100)))))
 
+        pitch_str = read_cfg('pitch', '+0Hz')
+        try:
+            m = re.match(r'^([+-]?[0-9]+)', pitch_str)
+            p_val = int(m.group(1)) if m else 0
+        except Exception:
+            p_val = 0
+        self.sl_pitch.setValue(max(-25, min(25, p_val)))
+        self.lbl_pitch.setText(f'{p_val:+d}Hz')
+
         self.chk_show_player.setChecked(read_bool_cfg('show_hud', read_bool_cfg('show_floating_player', True)))
         self.chk_enable_replay.setChecked(read_bool_cfg('replay_at_end', read_bool_cfg('enable_replay', True)))
         self.chk_duck_audio.setChecked(read_bool_cfg('duck_background_audio', False))
@@ -563,6 +614,7 @@ class TTSSettingsWindow(QDialog):
         if theme_val not in ('auto', 'dark', 'light'):
             theme_val = 'auto'
         self._set_combo_by_data(self.cb_theme, theme_val)
+        self.ed_obs_vault.setText(read_cfg('obsidian_vault', ''))
         self.chk_filter_md.setChecked(read_bool_cfg('filter_markdown', True))
         self.chk_filter_urls.setChecked(read_bool_cfg('filter_urls', True))
         self.chk_filter_code.setChecked(read_bool_cfg('skip_code', read_bool_cfg('filter_code', False)))
@@ -591,6 +643,8 @@ class TTSSettingsWindow(QDialog):
         replay = 'yes' if self.chk_enable_replay.isChecked() else 'no'
         duck_bg = 'yes' if self.chk_duck_audio.isChecked() else 'no'
         ui_theme = self.cb_theme.currentData() or 'auto'
+        pitch_val = f'{self.sl_pitch.value():+d}Hz'
+        obs_vault = self.ed_obs_vault.text().strip()
         f_md = 'yes' if self.chk_filter_md.isChecked() else 'no'
         f_urls = 'yes' if self.chk_filter_urls.isChecked() else 'no'
         f_code = 'yes' if self.chk_filter_code.isChecked() else 'no'
@@ -614,6 +668,7 @@ class TTSSettingsWindow(QDialog):
             'rate_ar': ar_rate,
             'rate_de': de_rate,
             'global_speed': spd_str,
+            'pitch': pitch_val,
             'show_hud': show_hud,
             'replay_at_end': replay,
             'filter_markdown': f_md,
@@ -630,6 +685,7 @@ class TTSSettingsWindow(QDialog):
             'translate_api_key': t_key,
             'duck_background_audio': duck_bg,
             'ui_theme': ui_theme,
+            'obsidian_vault': obs_vault,
         })
 
         # Also maintain legacy flat filenames for backward compatibility
@@ -646,6 +702,36 @@ class TTSSettingsWindow(QDialog):
         write_cfg('pause_delay_ms', p_delay)
         write_cfg('translate_target', self.cb_trans_target.currentData() or '')
         write_cfg('ui_theme', ui_theme)
+        write_cfg('pitch', pitch_val)
+        write_cfg('obsidian_vault', obs_vault)
+
+    def _verify_pronunciation(self):
+        word = self.ed_lex_word.text().strip()
+        alias = self.ed_lex_alias.text().strip()
+        if not word and not alias:
+            self._set_status('Please enter a word or phonetic alias to test.', is_error=True)
+            return
+        test_txt = alias if alias else word
+        self._set_status(f"Testing pronunciation: '{test_txt}'...")
+        speak_sh = os.path.join(SCRIPT_DIR, 'speak.sh')
+        subprocess.Popen(
+            ['bash', speak_sh, '--text', f"Testing pronunciation: {test_txt}"],
+            env=get_sanitized_env(),
+        )
+
+    def _add_to_lexicon(self):
+        word = self.ed_lex_word.text().strip()
+        alias = self.ed_lex_alias.text().strip()
+        if not word or not alias:
+            self._set_status('Enter both Word and Phonetic Alias to add to lexicon.', is_error=True)
+            return
+        cur_text = self.txt_lexicon.toPlainText().strip()
+        line = f'{word} = {alias}'
+        new_text = f"{cur_text}\n{line}" if cur_text else line
+        self.txt_lexicon.setPlainText(new_text)
+        self.ed_lex_word.clear()
+        self.ed_lex_alias.clear()
+        self._set_status(f"Added '{word} = {alias}' to lexicon (remember to click Save).")
 
         # Save lexicon.json atomically
         lex_map = {}

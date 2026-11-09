@@ -18,6 +18,9 @@ import sys
 import threading
 import time
 
+from PyQt6.QtCore import QObject, pyqtSlot
+from PyQt6.QtDBus import QDBusMessage
+
 # Optional media-key support
 try:
     from pynput import keyboard
@@ -33,7 +36,10 @@ from tts_text_processor import (
     ensure_runtime_symlinks,
     get_mpv_socket_path,
     get_runtime_dir,
+    get_sanitized_env,
     get_status_path,
+    prune_audio_cache,
+    prune_runtime_dir,
     read_bool_config,
 )
 from tts_synth_worker import start_synth_server_thread
@@ -86,6 +92,133 @@ def _acquire_lock(log):
     except (IOError, OSError):
         log.error('Already running — exiting')
         sys.exit(0)
+
+
+class NativeX11MediaKeyListener:
+    """Fallback global media key listener using libX11 when pynput is not installed."""
+
+    def __init__(self, callback):
+        self.callback = callback
+        self._running = False
+        self._thread = None
+        self._c_handler = None
+
+    def start(self):
+        if self._thread and self._thread.is_alive():
+            return
+        import ctypes
+        try:
+            x11 = ctypes.cdll.LoadLibrary('libX11.so.6')
+        except OSError:
+            return
+        self._running = True
+        self._thread = threading.Thread(target=self._loop, args=(x11,), daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._running = False
+
+    def _loop(self, x11):
+        import ctypes
+        try:
+            x11.XInitThreads()
+        except Exception:
+            pass
+
+        x11.XOpenDisplay.restype = ctypes.c_void_p
+        disp = x11.XOpenDisplay(None)
+        if not disp:
+            return
+
+        # Suppress X errors (e.g. BadAccess) if another process grabbed the key
+        err_func_type = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
+        self._c_handler = err_func_type(lambda dpy, err: 0)
+        try:
+            x11.XSetErrorHandler(self._c_handler)
+        except Exception:
+            pass
+
+        try:
+            screen = x11.XDefaultScreen(disp)
+            x11.XRootWindow.restype = ctypes.c_ulong
+            root = x11.XRootWindow(disp, screen)
+        except Exception:
+            try:
+                x11.XCloseDisplay(disp)
+            except Exception:
+                pass
+            return
+
+        keysyms = {
+            0x1008FF14: 'play_pause',  # XF86AudioPlay
+            0x1008FF31: 'play_pause',  # XF86AudioPause
+            0x1008FF15: 'stop',        # XF86AudioStop
+            0x1008FF17: 'next',        # XF86AudioNext
+            0x1008FF16: 'prev',        # XF86AudioPrev
+        }
+        mod_masks = [0, 2, 16, 18]
+
+        for ksym in keysyms:
+            try:
+                code = x11.XKeysymToKeycode(disp, ctypes.c_ulong(ksym))
+                if code:
+                    for mod in mod_masks:
+                        x11.XGrabKey(disp, ctypes.c_int(code), ctypes.c_uint(mod), root, True, 1, 1)
+            except Exception:
+                pass
+
+        try:
+            x11.XFlush(disp)
+        except Exception:
+            pass
+
+        event = (ctypes.c_char * 192)()
+        while self._running:
+            try:
+                if x11.XPending(disp) > 0:
+                    x11.XNextEvent(disp, event)
+                    type_val = ctypes.c_int.from_buffer_copy(event[:4]).value
+                    if type_val == 2:  # KeyPress
+                        kc = (
+                            ctypes.c_uint.from_buffer_copy(event[84:88]).value
+                            if sys.maxsize > 2**32
+                            else ctypes.c_uint.from_buffer_copy(event[52:56]).value
+                        )
+                        for ksym, action in keysyms.items():
+                            if x11.XKeysymToKeycode(disp, ctypes.c_ulong(ksym)) == kc:
+                                try:
+                                    self.callback(action)
+                                except Exception:
+                                    pass
+                                break
+                else:
+                    time.sleep(0.08)
+            except Exception:
+                break
+
+        try:
+            x11.XCloseDisplay(disp)
+        except Exception:
+            pass
+
+
+class ThemeWatcher(QObject):
+    """Watches FreeDesktop Settings portal signals for instant theme changes."""
+
+    def __init__(self, callback):
+        super().__init__()
+        self.callback = callback
+
+    @pyqtSlot(QDBusMessage)
+    def on_setting_changed(self, msg: QDBusMessage):
+        try:
+            args = msg.arguments()
+            ns = str(args[0]).lower() if len(args) > 0 else ''
+            key = str(args[1]).lower() if len(args) > 1 else ''
+            if 'interface' in ns or key in ('color-scheme', 'gtk-theme'):
+                self.callback()
+        except Exception:
+            self.callback()
 
 
 # ── PyQt6 Tray + Floating HUD Implementation ──────────────────────────────────
@@ -178,10 +311,39 @@ class QtTTSDaemon:
         signal.signal(signal.SIGINT, lambda *_: self._on_quit())
         signal.signal(signal.SIGTERM, lambda *_: self._on_quit())
 
+        # Real-time desktop theme change listener (org.freedesktop.portal.Settings)
+        try:
+            from PyQt6.QtDBus import QDBusConnection
+            self._theme_watcher = ThemeWatcher(lambda: (
+                self.player_window.apply_theme(),
+                getattr(self.player_window, 'queue_window', None) and self.player_window.queue_window.apply_theme()
+            ))
+            ok = QDBusConnection.sessionBus().connect(
+                'org.freedesktop.portal.Desktop',
+                '/org/freedesktop/portal/desktop',
+                'org.freedesktop.portal.Settings',
+                'SettingChanged',
+                self._theme_watcher.on_setting_changed,
+            )
+            if ok:
+                self.log.debug('Connected to portal SettingChanged D-Bus signal')
+        except Exception as e:
+            self.log.debug('Portal D-Bus theme listener unavailable: %s', e)
+
+        # Initial garbage collection of old cache and runtime tmpfs artifacts
+        self._last_prune_time = time.time()
+        try:
+            prune_audio_cache(max_size_mb=500, max_age_days=14)
+            prune_runtime_dir(max_age_hours=24)
+        except Exception:
+            pass
+
         if PYNPUT_AVAILABLE:
-            self.log.debug('pynput available')
+            self.log.debug('pynput available for media keys')
+            self._x11_listener = None
         else:
-            self.log.warning('pynput not installed; media keys disabled')
+            self.log.info('Using native X11 fallback for global media keys')
+            self._x11_listener = NativeX11MediaKeyListener(self._on_key_action)
 
     def _build_tray(self, QSystemTrayIcon, QMenu):
         self.tray = QSystemTrayIcon(self._icons['IDLE'], self.app)
@@ -339,14 +501,51 @@ class QtTTSDaemon:
         # Update Floating Player HUD & Queue Manager
         self.player_window.update_from_state(state)
 
+        # Periodic cache & tmpfs garbage collection (every 6 hours)
+        now = time.time()
+        if now - getattr(self, '_last_prune_time', 0.0) > 21600:
+            self._last_prune_time = now
+            try:
+                prune_audio_cache(max_size_mb=500, max_age_days=14)
+                prune_runtime_dir(max_age_hours=24)
+            except Exception:
+                pass
+
+    def _on_portal_setting_changed(self, namespace, key, value):
+        try:
+            ns = str(namespace).lower()
+            k = str(key).lower()
+            if 'interface' in ns or k in ('color-scheme', 'gtk-theme'):
+                self.log.info('Desktop theme signal received (%s.%s) — updating HUD', ns, k)
+                self.player_window.apply_theme()
+                if hasattr(self.player_window, 'queue_window'):
+                    self.player_window.queue_window.apply_theme()
+        except Exception as e:
+            self.log.debug('Theme change handling error: %s', e)
+
     def _sync_media_keys(self, state):
-        if not PYNPUT_AVAILABLE:
-            return
         active = state in ('PLAYING', 'PAUSED')
-        if active and self._listener is None:
-            self._start_keys()
-        elif not active and self._listener is not None:
-            self._stop_keys()
+        if PYNPUT_AVAILABLE:
+            if active and self._listener is None:
+                self._start_keys()
+            elif not active and self._listener is not None:
+                self._stop_keys()
+        elif getattr(self, '_x11_listener', None) is not None:
+            if active:
+                self._x11_listener.start()
+            else:
+                self._x11_listener.stop()
+
+    def _on_key_action(self, action: str):
+        self.log.debug('Native X11 media key pressed: %s', action)
+        if action == 'play_pause':
+            self._on_pause()
+        elif action == 'stop':
+            self._on_stop()
+        elif action == 'prev':
+            self._on_seek_back()
+        elif action == 'next':
+            self._on_seek_forward()
 
     def _start_keys(self):
         try:
@@ -388,6 +587,7 @@ class QtTTSDaemon:
                 ['bash', path],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                env=get_sanitized_env(),
             )
         except Exception as e:
             self.log.error('Failed to run %s: %s', script, e)
@@ -415,6 +615,8 @@ class QtTTSDaemon:
         self.log.info('Quit requested')
         self.timer.stop()
         self._stop_keys()
+        if getattr(self, '_x11_listener', None) is not None:
+            self._x11_listener.stop()
         if hasattr(self, 'ducker'):
             self.ducker.unduck()
         if self._lock_fd:

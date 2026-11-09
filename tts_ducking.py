@@ -8,10 +8,18 @@ levels when speech finishes or pauses.
 """
 
 import logging
+import os
 import re
 import shutil
 import subprocess
+import sys
 from typing import Dict, List, Optional
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
+
+from tts_text_processor import get_sanitized_env
 
 logger = logging.getLogger('tts-ducking')
 
@@ -36,7 +44,8 @@ class AudioDucker:
         try:
             res = subprocess.run(
                 [self._pactl, 'list', 'sink-inputs'],
-                capture_output=True, text=True, timeout=0.6
+                capture_output=True, text=True, timeout=0.6,
+                env=get_sanitized_env(),
             )
             if res.returncode != 0:
                 return []
@@ -104,7 +113,8 @@ class AudioDucker:
             try:
                 subprocess.run(
                     [self._pactl, 'set-sink-input-volume', sid, target_vol],
-                    capture_output=True, timeout=0.3
+                    capture_output=True, timeout=0.3,
+                    env=get_sanitized_env(),
                 )
                 ducked_any = True
                 logger.debug('Ducked sink-input #%s (%s) %s -> %s', sid, s['name'], orig_vol, target_vol)
@@ -126,7 +136,8 @@ class AudioDucker:
             try:
                 subprocess.run(
                     [self._pactl, 'set-sink-input-volume', sid, orig_vol],
-                    capture_output=True, timeout=0.3
+                    capture_output=True, timeout=0.3,
+                    env=get_sanitized_env(),
                 )
                 restored_any = True
                 logger.debug('Restored sink-input #%s to %s', sid, orig_vol)

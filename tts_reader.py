@@ -34,13 +34,72 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from tts_text_processor import (
+    READING_STATE_PATH,
     clean_and_filter_text,
     get_runtime_dir,
+    get_sanitized_env,
     load_queue,
     save_queue,
 )
 
 logger = logging.getLogger('tts-reader')
+
+
+def _get_doc_fingerprint(path: str) -> str:
+    """Generate persistent fingerprint for a document based on realpath and size."""
+    try:
+        rpath = os.path.realpath(path)
+        st = os.stat(rpath)
+        raw = f"{rpath}:{st.st_size}:{st.st_mtime}"
+        import hashlib
+        return hashlib.sha256(raw.encode('utf-8')).hexdigest()[:16]
+    except OSError:
+        import hashlib
+        return hashlib.sha256(path.encode('utf-8')).hexdigest()[:16]
+
+
+def get_reading_state(file_path: str) -> Optional[Dict[str, Any]]:
+    """Retrieve saved reading progress for a document from ~/.local/share/speak-aloud/reading_state.json."""
+    if not os.path.isfile(READING_STATE_PATH):
+        return None
+    try:
+        with open(READING_STATE_PATH, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        fp = _get_doc_fingerprint(file_path)
+        return data.get(fp)
+    except Exception:
+        return None
+
+
+def save_reading_state(file_path: str, chapter: int, total_chapters: int, title: str = '') -> None:
+    """Save audiobook / document reading progress atomically."""
+    os.makedirs(os.path.dirname(READING_STATE_PATH), mode=0o700, exist_ok=True)
+    fp = _get_doc_fingerprint(file_path)
+    state = {}
+    if os.path.isfile(READING_STATE_PATH):
+        try:
+            with open(READING_STATE_PATH, 'r', encoding='utf-8') as f:
+                state = json.load(f)
+        except Exception:
+            state = {}
+    state[fp] = {
+        'file_path': os.path.realpath(file_path),
+        'title': title or os.path.basename(file_path),
+        'last_chapter': chapter,
+        'total_chapters': total_chapters,
+        'updated_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+    }
+    tmp_path = f"{READING_STATE_PATH}.tmp.{os.getpid()}"
+    try:
+        with open(tmp_path, 'w', encoding='utf-8') as f:
+            json.dump(state, f, indent=2)
+        os.replace(tmp_path, READING_STATE_PATH)
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
 
 class SimpleHTMLTextExtractor(HTMLParser):
@@ -101,13 +160,13 @@ def extract_from_pdf(pdf_path: str, page: Optional[int] = None) -> List[Dict[str
 
     if page is not None and page > 0:
         cmd = [pdftotext, '-f', str(page), '-l', str(page), '-layout', pdf_path, '-']
-        res = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        res = subprocess.run(cmd, capture_output=True, text=True, check=True, env=get_sanitized_env())
         txt = clean_and_filter_text(res.stdout)
         return [{'title': f'{base_name} — Page {page}', 'text': txt}]
 
     # Extract all pages delimited by FormFeed (\x0c)
     cmd = [pdftotext, '-layout', pdf_path, '-']
-    res = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    res = subprocess.run(cmd, capture_output=True, text=True, check=True, env=get_sanitized_env())
     raw_pages = res.stdout.split('\x0c')
     results: List[Dict[str, str]] = []
 
@@ -248,6 +307,8 @@ def main():
     parser.add_argument('--url', help='Webpage URL to extract and read')
     parser.add_argument('--queue', '-q', action='store_true', help='Enqueue extracted items instead of printing')
     parser.add_argument('--speak', action='store_true', help='Trigger speak.sh on the extracted text')
+    parser.add_argument('--resume', action='store_true', default=True, help='Resume from last saved reading position')
+    parser.add_argument('--reset', action='store_true', help='Reset reading progress and start from chapter 1')
 
     args = parser.parse_args()
 
@@ -270,6 +331,17 @@ def main():
         else:
             sys.stderr.write(f'Unsupported file format: {ext}\n')
             sys.exit(1)
+
+        # Check and apply reading progress tracker
+        if docs and not args.page:
+            total_ch = len(docs)
+            prev_state = get_reading_state(args.file)
+            if prev_state and not args.reset and args.resume:
+                last_ch = prev_state.get('last_chapter', 0)
+                if 0 < last_ch < total_ch:
+                    sys.stderr.write(f"Resuming '{args.file}' from Chapter/Page {last_ch + 1} of {total_ch}...\n")
+                    docs = docs[last_ch:]
+            save_reading_state(args.file, chapter=0, total_chapters=total_ch, title=docs[0].get('title', ''))
     else:
         parser.print_help()
         sys.exit(1)
@@ -286,7 +358,7 @@ def main():
     combined_text = '\n\n'.join(d['text'] for d in docs if d.get('text'))
     if args.speak:
         speak_sh = os.path.join(SCRIPT_DIR, 'speak.sh')
-        subprocess.run(['bash', speak_sh, '--text', combined_text])
+        subprocess.run(['bash', speak_sh, '--text', combined_text], env=get_sanitized_env())
     else:
         sys.stdout.write(combined_text + '\n')
 

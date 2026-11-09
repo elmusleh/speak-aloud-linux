@@ -59,12 +59,14 @@ if SCRIPT_DIR not in sys.path:
 
 from tts_text_processor import (
     CONFIG_DIR,
+    TTSSettingsStore,
     atomic_write_json,
     atomic_write_text,
     ensure_runtime_symlinks,
     get_effective_theme,
     get_mpv_socket_path,
     get_queue_path,
+    get_sanitized_env,
     get_status_path,
     get_work_dir,
     read_str_config,
@@ -1730,6 +1732,9 @@ class FloatingPlayerWindow(QWidget):
         self._transcript_rows: List[QFrame] = []
         self._segment_words: Dict[int, List[Dict[str, Any]]] = {}
         self._current_theme: str = ''
+        self.sleep_timer_seconds: int = 0
+        self.sleep_timer_mode: int = 0
+        self._last_sleep_tick: float = time.time()
 
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
@@ -1816,6 +1821,14 @@ class FloatingPlayerWindow(QWidget):
         self.btn_bookmark = self._make_util_btn('bookmark', 'Bookmark current passage & timestamp (Hotkey: B)')
         self.btn_bookmark.clicked.connect(self._on_bookmark_clicked)
         header_row.addWidget(self.btn_bookmark)
+
+        # Sleep / Pomodoro Timer (moon)
+        self.btn_sleep = self._make_util_btn('moon', 'Sleep Timer: Off (Click / Z to cycle: 15m, 30m, 45m, 60m, End)')
+        self.btn_sleep.setCheckable(True)
+        self.btn_sleep.clicked.connect(self._cycle_sleep_timer)
+        self.btn_sleep.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.btn_sleep.customContextMenuRequested.connect(self._show_sleep_context_menu)
+        header_row.addWidget(self.btn_sleep)
 
         # Open Settings (sliders)
         self.btn_settings = self._make_util_btn('sliders', 'Open TTS Settings')
@@ -2005,6 +2018,7 @@ class FloatingPlayerWindow(QWidget):
             getattr(self, 'btn_ocr', None),
             getattr(self, 'btn_save', None),
             getattr(self, 'btn_bookmark', None),
+            getattr(self, 'btn_sleep', None),
             getattr(self, 'btn_settings', None),
             getattr(self, 'btn_close', None),
         ):
@@ -2051,12 +2065,45 @@ class FloatingPlayerWindow(QWidget):
             if hasattr(self, 'queue_window'):
                 self.queue_window.apply_theme(target_theme)
 
+        # Sleep Timer countdown & auto-fade logic
+        now = time.time()
+        elapsed = now - getattr(self, '_last_sleep_tick', now)
+        if elapsed >= 1.0:
+            self._last_sleep_tick = now
+            if getattr(self, 'sleep_timer_seconds', 0) > 0:
+                self.sleep_timer_seconds -= int(elapsed)
+                if self.sleep_timer_seconds <= 30 and self.sleep_timer_seconds > 0:
+                    fade_vol = max(10, int(self.sleep_timer_seconds * 3.3))
+                    self.controller.mpv_set('volume', fade_vol)
+                elif self.sleep_timer_seconds <= 0:
+                    self.sleep_timer_seconds = 0
+                    self.sleep_timer_mode = 0
+                    self.controller.stop()
+                    self._update_sleep_btn_ui()
+                    subprocess.Popen(
+                        ['notify-send', 'Speak a Loud', 'Sleep timer expired — playback stopped.'],
+                        env=get_sanitized_env(),
+                    )
+            elif getattr(self, 'sleep_timer_mode', 0) == -1:
+                self._update_sleep_btn_ui()
+
         # Poll queue file changes
         self.queue_window.load_from_disk()
         self.btn_queue.setChecked(self.queue_window.isVisible())
 
         data = self.controller.refresh(daemon_state)
         sid = self.controller.session_id
+
+        # If sleep timer mode is 'End of passage' (-1) and playback reached end:
+        if getattr(self, 'sleep_timer_mode', 0) == -1 and data.get('is_at_end'):
+            self.sleep_timer_mode = 0
+            self.sleep_timer_seconds = 0
+            self.controller.stop()
+            self._update_sleep_btn_ui()
+            subprocess.Popen(
+                ['notify-send', 'Speak a Loud', 'Reached end of passage — playback stopped.'],
+                env=get_sanitized_env(),
+            )
 
         # Check if we should auto-advance the queue when an item finishes
         if data['is_at_end'] and self.queue_window.is_playing_from_queue:
@@ -2472,17 +2519,125 @@ class FloatingPlayerWindow(QWidget):
             f"### {now_str} — [{cur_t} / {tot_t}] (Speed {self.controller.speed:g}x)\n"
             f"> {text}\n\n"
         )
+        saved_ok = False
         try:
             with open(bpath, 'a', encoding='utf-8') as f:
                 f.write(entry)
+            saved_ok = True
+        except Exception:
+            pass
+
+        # Optional: Sync note to configured Obsidian Vault
+        try:
+            store = TTSSettingsStore()
+            obs_vault = store.get('obsidian_vault', '').strip()
+            obs_folder = store.get('obsidian_folder', 'Reading Notes').strip() or 'Reading Notes'
+            if obs_vault:
+                vault_dir = os.path.expanduser(obs_vault)
+                if os.path.isdir(vault_dir):
+                    target_dir = os.path.join(vault_dir, obs_folder)
+                    os.makedirs(target_dir, exist_ok=True)
+                    obs_file = os.path.join(target_dir, 'TTS Bookmarks.md')
+                    obs_entry = (
+                        f"\n## {now_str} — [{cur_t} / {tot_t}]\n"
+                        f"#tts/bookmark #spoken-quote\n\n"
+                        f"> [!quote] Spoken Passage\n"
+                        f"> {text}\n\n"
+                        f"- **Source**: {self.title_lbl.text().strip()}\n"
+                        f"- **Timestamp**: `{cur_t} / {tot_t}` (Speed: {self.controller.speed:g}x)\n"
+                    )
+                    with open(obs_file, 'a', encoding='utf-8') as of:
+                        of.write(obs_entry)
+                else:
+                    import urllib.parse
+                    content = f"#tts/bookmark\n\n> {text}\n\n- Time: {cur_t} / {tot_t}\n"
+                    params = urllib.parse.urlencode({
+                        'vault': obs_vault,
+                        'name': f"TTS Note - {time.strftime('%Y-%m-%d %H-%M')}",
+                        'content': content,
+                    })
+                    subprocess.Popen(['xdg-open', f"obsidian://new?{params}"], env=get_sanitized_env())
+        except Exception:
+            pass
+
+        if saved_ok:
             self.btn_bookmark.setIcon(lucide_icon('check', '#34D399', 14))
             self.btn_bookmark.setToolTip('★ Bookmarked!')
             QTimer.singleShot(1600, lambda: (
                 self.btn_bookmark.setIcon(lucide_icon('bookmark', '#9CA3AF', 14)),
                 self.btn_bookmark.setToolTip('Bookmark current passage & timestamp (Hotkey: B)')
             ))
-        except Exception:
-            pass
+
+    def _cycle_sleep_timer(self):
+        cycle = [0, 15 * 60, 30 * 60, 45 * 60, 60 * 60, -1]
+        cur = self.sleep_timer_seconds if getattr(self, 'sleep_timer_mode', 0) != -1 else -1
+        try:
+            curr_idx = cycle.index(cur)
+            next_val = cycle[(curr_idx + 1) % len(cycle)]
+        except ValueError:
+            next_val = 15 * 60
+        self._set_sleep_timer(next_val)
+
+    def _set_sleep_timer(self, seconds: int):
+        self.sleep_timer_mode = -1 if seconds == -1 else (1 if seconds > 0 else 0)
+        self.sleep_timer_seconds = max(0, seconds)
+        self._update_sleep_btn_ui()
+
+    def _show_sleep_context_menu(self, pos):
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #1E212B;
+                color: #F3F4F6;
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 8px;
+                padding: 4px;
+            }
+            QMenu::item {
+                padding: 5px 16px;
+                border-radius: 4px;
+            }
+            QMenu::item:selected {
+                background-color: #6366F1;
+                color: #FFFFFF;
+            }
+        """)
+        m_off = menu.addAction("Timer Off")
+        m_15 = menu.addAction("15 Minutes")
+        m_30 = menu.addAction("30 Minutes")
+        m_45 = menu.addAction("45 Minutes")
+        m_60 = menu.addAction("60 Minutes")
+        m_end = menu.addAction("Stop at End of Passage")
+        action = menu.exec(self.btn_sleep.mapToGlobal(pos))
+        if action == m_off:
+            self._set_sleep_timer(0)
+        elif action == m_15:
+            self._set_sleep_timer(15 * 60)
+        elif action == m_30:
+            self._set_sleep_timer(30 * 60)
+        elif action == m_45:
+            self._set_sleep_timer(45 * 60)
+        elif action == m_60:
+            self._set_sleep_timer(60 * 60)
+        elif action == m_end:
+            self._set_sleep_timer(-1)
+
+    def _update_sleep_btn_ui(self):
+        color = '#6366F1' if (self.sleep_timer_seconds > 0 or self.sleep_timer_mode == -1) else (
+            '#475569' if getattr(self, '_current_theme', '') == 'light' else '#9CA3AF'
+        )
+        self.btn_sleep.setChecked(self.sleep_timer_seconds > 0 or self.sleep_timer_mode == -1)
+        if self.sleep_timer_mode == -1:
+            self.btn_sleep.setToolTip('Sleep Timer: Stop at end of current passage (Active)')
+            self.btn_sleep.setIcon(lucide_icon('moon', '#6366F1', 14))
+        elif self.sleep_timer_seconds > 0:
+            m = self.sleep_timer_seconds // 60
+            s = self.sleep_timer_seconds % 60
+            self.btn_sleep.setToolTip(f'Sleep Timer Active: {m:02d}:{s:02d} remaining (Hotkey: Z)')
+            self.btn_sleep.setIcon(lucide_icon('moon', '#6366F1', 14))
+        else:
+            self.btn_sleep.setToolTip('Sleep / Study Timer (Off | 15m | 30m | 45m | End) (Hotkey: Z)')
+            self.btn_sleep.setIcon(lucide_icon('moon', color, 14))
 
     def _on_ocr_clicked(self):
         subprocess.Popen(
@@ -2490,6 +2645,7 @@ class FloatingPlayerWindow(QWidget):
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
+            env=get_sanitized_env(),
         )
 
     def _on_open_settings(self):
@@ -2499,6 +2655,7 @@ class FloatingPlayerWindow(QWidget):
             ['bash', os.path.join(SCRIPT_DIR, 'tts-settings.sh')],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            env=get_sanitized_env(),
         )
 
     def keyPressEvent(self, event):
@@ -2535,6 +2692,10 @@ class FloatingPlayerWindow(QWidget):
             return
         if key == Qt.Key.Key_B:
             self._on_bookmark_clicked()
+            event.accept()
+            return
+        if key == Qt.Key.Key_Z:
+            self._cycle_sleep_timer()
             event.accept()
             return
         if key == Qt.Key.Key_O:

@@ -455,4 +455,169 @@ def test_system_theme_detection_and_popup_styling(tmp_path, monkeypatch):
     assert '#16181E' in qwin.styleSheet()
 
 
+def test_audio_cache_hash_and_lru_pruning(tmp_path, monkeypatch):
+    import time
+    from tts_text_processor import (
+        get_audio_cache_path,
+        prune_audio_cache,
+        prune_runtime_dir,
+    )
+
+    cdir = str(tmp_path / 'cache_audio')
+    monkeypatch.setattr('tts_text_processor.AUDIO_CACHE_DIR', cdir)
+    os.makedirs(cdir, exist_ok=True)
+
+    # 1. Deterministic Hash Path
+    p1 = get_audio_cache_path("Sample text to cache", "en-US-ChristopherNeural", "+10%", "+5Hz")
+    p2 = get_audio_cache_path("Sample text to cache", "en-US-ChristopherNeural", "+10%", "+5Hz")
+    p3 = get_audio_cache_path("Different text", "en-US-ChristopherNeural", "+10%", "+5Hz")
+    assert p1 == p2
+    assert p1 != p3
+    assert p1.endswith('.mp3')
+
+    # 2. Write dummy cached mp3 files
+    f_old = os.path.join(cdir, 'old.mp3')
+    with open(f_old, 'wb') as f:
+        f.write(b'\x00' * 500)
+    # Set old timestamp (15 days ago)
+    old_time = time.time() - (15 * 86400)
+    os.utime(f_old, (old_time, old_time))
+
+    f_new = os.path.join(cdir, 'new.mp3')
+    with open(f_new, 'wb') as f:
+        f.write(b'\x00' * 500)
+
+    res = prune_audio_cache(max_size_mb=10, max_age_days=14)
+    assert res['deleted_files'] >= 1
+    assert not os.path.exists(f_old)
+    assert os.path.exists(f_new)
+
+    # 3. Test Runtime Directory Pruner
+    rdir = str(tmp_path / 'runtime')
+    os.makedirs(rdir, exist_ok=True)
+    monkeypatch.setattr('tts_text_processor.get_runtime_dir', lambda: rdir)
+    old_session = os.path.join(rdir, 'work_old_session')
+    os.makedirs(old_session, exist_ok=True)
+    os.utime(old_session, (time.time() - 100_000, time.time() - 100_000))
+    pruned = prune_runtime_dir(max_age_hours=24)
+    assert pruned >= 1
+    assert not os.path.exists(old_session)
+
+
+def test_speech_pitch_formatting_and_schema():
+    from tts_text_processor import format_pitch_str, TTSSettingsStore
+
+    assert format_pitch_str('+5Hz') == '+5Hz'
+    assert format_pitch_str('-12Hz') == '-12Hz'
+    assert format_pitch_str('0') == '+0Hz'
+    assert format_pitch_str(None) == '+0Hz'
+    assert format_pitch_str('invalid_value') == '+0Hz'
+    assert format_pitch_str('+90Hz') == '+50Hz'  # Clamped to 50
+
+    val = TTSSettingsStore.validate({'pitch': '-8Hz', 'obsidian_vault': 'My Vault'})
+    assert val['pitch'] == '-8Hz'
+    assert val['obsidian_vault'] == 'My Vault'
+
+
+def test_subprocess_environment_sanitization(monkeypatch):
+    from tts_text_processor import get_sanitized_env
+
+    monkeypatch.setenv('LD_PRELOAD', '/malicious/lib.so')
+    monkeypatch.setenv('PYTHONPATH', '/custom/path')
+    monkeypatch.setenv('DISPLAY', ':0')
+
+    clean = get_sanitized_env({'CUSTOM_VAR': 'safe'})
+    assert 'LD_PRELOAD' not in clean
+    assert 'PYTHONPATH' not in clean
+    assert clean.get('DISPLAY') == ':0'
+    assert clean.get('CUSTOM_VAR') == 'safe'
+    assert '/usr/bin' in clean.get('PATH', '')
+
+
+def test_sleep_timer_state_and_hud_controls():
+    from PyQt6.QtWidgets import QApplication
+    _app = QApplication.instance() or QApplication([])
+    from tts_hud import FloatingPlayerWindow, MPVTimelineController, QueueManagerWindow
+    from PyQt6.QtGui import QKeyEvent
+    from PyQt6.QtCore import Qt
+
+    ctrl = MPVTimelineController()
+    qwin = QueueManagerWindow()
+    hud = FloatingPlayerWindow(ctrl, qwin)
+
+    # Initial state
+    assert hud.sleep_timer_seconds == 0
+    assert hud.sleep_timer_mode == 0
+
+    # Cycle once (0 -> 15m)
+    hud._cycle_sleep_timer()
+    assert hud.sleep_timer_seconds == 15 * 60
+    assert hud.sleep_timer_mode == 1
+    assert '15:00' in hud.btn_sleep.toolTip()
+
+    # Hotkey Z triggers cycle
+    ev_z = QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Z, Qt.KeyboardModifier.NoModifier)
+    hud.keyPressEvent(ev_z)
+    assert hud.sleep_timer_seconds == 30 * 60
+
+    # Set Stop at end of passage (-1)
+    hud._set_sleep_timer(-1)
+    assert hud.sleep_timer_mode == -1
+    assert 'end of current passage' in hud.btn_sleep.toolTip().lower()
+
+
+def test_reading_progress_tracker(tmp_path, monkeypatch):
+    from tts_reader import get_reading_state, save_reading_state
+
+    state_file = str(tmp_path / 'reading_state.json')
+    monkeypatch.setattr('tts_reader.READING_STATE_PATH', state_file)
+
+    doc_file = str(tmp_path / 'test_book.pdf')
+    with open(doc_file, 'w') as f:
+        f.write('Sample PDF Content')
+
+    assert get_reading_state(doc_file) is None
+
+    save_reading_state(doc_file, chapter=14, total_chapters=120, title='My Audio Book')
+    state = get_reading_state(doc_file)
+    assert state is not None
+    assert state['last_chapter'] == 14
+    assert state['total_chapters'] == 120
+    assert state['title'] == 'My Audio Book'
+
+
+def test_obsidian_vault_bookmark_sync(tmp_path, monkeypatch):
+    from PyQt6.QtWidgets import QApplication
+    _app = QApplication.instance() or QApplication([])
+    from tts_hud import FloatingPlayerWindow, MPVTimelineController, QueueManagerWindow
+
+    vault_dir = tmp_path / 'MyVault'
+    notes_dir = vault_dir / 'Reading Notes'
+    os.makedirs(notes_dir, exist_ok=True)
+
+    cfg_dir = str(tmp_path / 'cfg')
+    os.makedirs(cfg_dir, exist_ok=True)
+    monkeypatch.setattr('tts_text_processor.CONFIG_DIR', cfg_dir)
+    monkeypatch.setattr('tts_hud.CONFIG_DIR', cfg_dir)
+
+    with open(os.path.join(cfg_dir, 'settings.json'), 'w') as f:
+        f.write(json.dumps({'obsidian_vault': str(vault_dir), 'obsidian_folder': 'Reading Notes'}))
+
+    ctrl = MPVTimelineController()
+    ctrl.current_time = 22.0
+    ctrl.total_duration = 180.0
+    ctrl.chunks_meta = [{'text': 'Insights for personal knowledge base.'}]
+    qwin = QueueManagerWindow()
+    hud = FloatingPlayerWindow(ctrl, qwin)
+
+    hud._on_bookmark_clicked()
+
+    obs_file = notes_dir / 'TTS Bookmarks.md'
+    assert obs_file.exists()
+    content = obs_file.read_text(encoding='utf-8')
+    assert '#tts/bookmark' in content
+    assert 'Insights for personal knowledge base.' in content
+
+
+
 

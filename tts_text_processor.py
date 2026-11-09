@@ -11,6 +11,7 @@ Combines:
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -27,6 +28,8 @@ from typing import Any, Dict, List, Optional
 CONFIG_DIR = os.path.expanduser('~/.config/tts_settings')
 SETTINGS_JSON_PATH = os.path.join(CONFIG_DIR, 'settings.json')
 LEXICON_JSON_PATH = os.path.join(CONFIG_DIR, 'lexicon.json')
+AUDIO_CACHE_DIR = os.path.expanduser('~/.cache/speak-aloud/audio')
+READING_STATE_PATH = os.path.expanduser('~/.local/share/speak-aloud/reading_state.json')
 
 
 def get_runtime_dir() -> str:
@@ -153,6 +156,140 @@ def get_effective_theme(app: Any = None, max_age_sec: float = 3.0) -> str:
     _THEME_CACHE['time'] = now
     _THEME_CACHE['val'] = resolved
     return resolved
+
+
+def get_sanitized_env(extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """Return a hardened, sanitized environment dictionary for subprocess execution."""
+    safe_keys = {
+        'DISPLAY', 'XAUTHORITY', 'DBUS_SESSION_BUS_ADDRESS',
+        'XDG_RUNTIME_DIR', 'XDG_CURRENT_DESKTOP', 'XDG_SESSION_TYPE',
+        'PULSE_SERVER', 'WAYLAND_DISPLAY', 'HOME', 'USER',
+        'LANG', 'LC_ALL', 'TERM',
+    }
+    clean = {k: os.environ[k] for k in safe_keys if k in os.environ}
+    home_bin = os.path.expanduser('~/.local/bin')
+    clean['PATH'] = f"/usr/local/bin:/usr/bin:/bin:/snap/bin:{home_bin}"
+    if extra:
+        clean.update(extra)
+    return clean
+
+
+def format_pitch_str(raw: Any) -> str:
+    """Format and validate pitch string (e.g. '+0Hz', '-5Hz', '+10Hz')."""
+    if raw is None:
+        return '+0Hz'
+    s = str(raw).strip()
+    m = re.match(r'^([+-]?[0-9]+)\s*(Hz|%)?$', s, re.IGNORECASE)
+    if m:
+        val = int(m.group(1))
+        val = max(-50, min(50, val))
+        unit = m.group(2) or 'Hz'
+        return f"{val:+d}{unit}"
+    return '+0Hz'
+
+
+def get_audio_cache_path(text: str, voice: str, rate: str, pitch: str = '+0Hz') -> str:
+    """Generate SHA256 content-addressed cache path for an audio segment."""
+    os.makedirs(AUDIO_CACHE_DIR, mode=0o700, exist_ok=True)
+    norm_txt = text.strip()
+    norm_voice = voice.strip()
+    norm_rate = _format_rate_str(rate)
+    norm_pitch = format_pitch_str(pitch)
+    key = hashlib.sha256(f"{norm_txt}:{norm_voice}:{norm_rate}:{norm_pitch}".encode('utf-8')).hexdigest()
+    return os.path.join(AUDIO_CACHE_DIR, f"{key}.mp3")
+
+
+def prune_audio_cache(max_size_mb: int = 500, max_age_days: int = 14) -> Dict[str, int]:
+    """Prune audio cache using LRU order when size > max_size_mb or age > max_age_days."""
+    if not os.path.isdir(AUDIO_CACHE_DIR):
+        return {'deleted_files': 0, 'reclaimed_bytes': 0}
+
+    now = time.time()
+    max_age_sec = max_age_days * 86400
+    max_bytes = max_size_mb * 1024 * 1024
+
+    files_info: List[tuple] = []
+    total_bytes = 0
+    deleted_files = 0
+    reclaimed_bytes = 0
+
+    try:
+        for entry in os.scandir(AUDIO_CACHE_DIR):
+            if entry.is_file():
+                try:
+                    stat = entry.stat()
+                    total_bytes += stat.st_size
+                    # Check file age first
+                    if (now - stat.st_mtime) > max_age_sec:
+                        os.unlink(entry.path)
+                        words_file = os.path.splitext(entry.path)[0] + '.words.json'
+                        if os.path.exists(words_file):
+                            try:
+                                os.unlink(words_file)
+                            except OSError:
+                                pass
+                        deleted_files += 1
+                        reclaimed_bytes += stat.st_size
+                        continue
+                    files_info.append((stat.st_atime or stat.st_mtime, stat.st_size, entry.path))
+                except OSError:
+                    continue
+    except OSError:
+        pass
+
+    # If cache still exceeds max_bytes, delete oldest accessed
+    cur_bytes = total_bytes - reclaimed_bytes
+    if cur_bytes > max_bytes:
+        files_info.sort(key=lambda x: x[0])  # Oldest accessed first
+        for atime, fsize, fpath in files_info:
+            try:
+                os.unlink(fpath)
+                words_file = os.path.splitext(fpath)[0] + '.words.json'
+                if os.path.exists(words_file):
+                    try:
+                        os.unlink(words_file)
+                    except OSError:
+                        pass
+                deleted_files += 1
+                reclaimed_bytes += fsize
+                cur_bytes -= fsize
+                if cur_bytes <= max_bytes * 0.85:  # Headroom
+                    break
+            except OSError:
+                continue
+
+    return {'deleted_files': deleted_files, 'reclaimed_bytes': reclaimed_bytes}
+
+
+def prune_runtime_dir(max_age_hours: int = 24) -> int:
+    """Prune old session workdirs and temporary artifacts in runtime directory."""
+    rdir = get_runtime_dir()
+    if not os.path.isdir(rdir):
+        return 0
+    now = time.time()
+    cutoff = now - (max_age_hours * 3600)
+    pruned = 0
+    try:
+        for entry in os.scandir(rdir):
+            if entry.is_dir() and entry.name.startswith(('work_', 'session_')):
+                try:
+                    stat = entry.stat()
+                    if stat.st_mtime < cutoff:
+                        shutil.rmtree(entry.path, ignore_errors=True)
+                        pruned += 1
+                except OSError:
+                    pass
+            elif entry.is_file() and entry.name.endswith(('.tmp', '.mp3', '.wav', '.log')):
+                try:
+                    stat = entry.stat()
+                    if stat.st_mtime < cutoff:
+                        os.unlink(entry.path)
+                        pruned += 1
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return pruned
 
 
 def load_queue() -> List[Dict[str, Any]]:
@@ -442,10 +579,14 @@ class TTSSettingsStore:
         'duck_background_audio': 'no',
         'duck_volume_percent': '40',
         'ui_theme': 'auto',
+        'pitch': '+0Hz',
+        'obsidian_vault': '',
+        'obsidian_folder': 'Reading Notes',
+        'sleep_timer_minutes': '0',
     }
 
     def __init__(self, config_dir: Optional[str] = None):
-        self.config_dir = config_dir or CONFIG_DIR
+        self.config_dir = config_dir or sys.modules.get('tts_text_processor', sys.modules[__name__]).CONFIG_DIR
         self.json_path = os.path.join(self.config_dir, 'settings.json')
 
     @classmethod
@@ -500,6 +641,10 @@ class TTSSettingsStore:
             'duck_background_audio': _norm_yes_no(src.get('duck_background_audio'), False),
             'duck_volume_percent': str(_parse_int_clamped(src.get('duck_volume_percent'), 5, 90, 40)),
             'ui_theme': ui_theme,
+            'pitch': format_pitch_str(src.get('pitch')),
+            'obsidian_vault': _sanitize_str(src.get('obsidian_vault'), 128, ''),
+            'obsidian_folder': _sanitize_str(src.get('obsidian_folder'), 128, 'Reading Notes'),
+            'sleep_timer_minutes': str(_parse_int_clamped(src.get('sleep_timer_minutes'), 0, 240, 0)),
         }
         return validated
 
@@ -562,6 +707,10 @@ class TTSSettingsStore:
                 merged['translate_api_key'] = kr_key
 
         return self.validate(merged)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """Convenience accessor to get a single validated setting value."""
+        return self.load().get(key, default)
 
     def save(self, updates: Dict[str, Any]) -> Dict[str, str]:
         """Validate and atomically write both settings.json and flat key files (with trailing newline)."""

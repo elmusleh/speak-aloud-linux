@@ -30,6 +30,9 @@ from tts_text_processor import (
     CONFIG_DIR,
     _format_rate_str,
     ensure_runtime_symlinks,
+    format_pitch_str,
+    get_audio_cache_path,
+    get_sanitized_env,
     get_synth_socket_path,
 )
 
@@ -124,6 +127,7 @@ def synthesize_with_piper(
     os.makedirs(parent, mode=0o700, exist_ok=True)
     fd, tmp_wav = tempfile.mkstemp(prefix='.piper_', suffix='.wav', dir=parent)
     os.close(fd)
+    clean_env = get_sanitized_env()
     try:
         proc = subprocess.run(
             [piper_bin, '--model', model_path, '--output_file', tmp_wav],
@@ -132,6 +136,7 @@ def synthesize_with_piper(
             stderr=subprocess.DEVNULL,
             timeout=20,
             check=False,
+            env=clean_env,
         )
         if proc.returncode != 0 or not os.path.isfile(tmp_wav) or os.path.getsize(tmp_wav) < 256:
             return False
@@ -152,6 +157,7 @@ def synthesize_with_piper(
                     stderr=subprocess.DEVNULL,
                     timeout=15,
                     check=False,
+                    env=clean_env,
                 )
                 if conv.returncode == 0 and os.path.isfile(tmp_mp3) and os.path.getsize(tmp_mp3) > 128:
                     os.replace(tmp_mp3, output_path)
@@ -181,15 +187,18 @@ async def synthesize_segment_async(
     rate: str,
     output_path: str,
     lang: str = 'en',
+    pitch: str = '+0Hz',
     piper_model: str = '',
     retries: int = 2,
+    use_cache: bool = True,
 ) -> Dict[str, Any]:
-    """Synthesize a segment via edge_tts.Communicate with automatic Piper fallback."""
+    """Synthesize a segment via edge_tts.Communicate with audio cache and automatic Piper fallback."""
     if not text or not text.strip():
         return {'ok': False, 'error': 'empty_text'}
 
-    # Normalize rate & voice so edge_tts.Communicate never raises ValueError
+    # Normalize rate, pitch & voice so edge_tts.Communicate never raises ValueError
     norm_rate = _format_rate_str(rate) if rate else '+0%'
+    norm_pitch = format_pitch_str(pitch) if pitch else '+0Hz'
     norm_voice = (voice or 'en-US-ChristopherNeural').splitlines()[0].strip()
     norm_lang = (lang or 'en').strip().lower()
     if norm_lang not in ('en', 'ar', 'de'):
@@ -197,6 +206,32 @@ async def synthesize_segment_async(
 
     parent = os.path.dirname(os.path.abspath(output_path))
     os.makedirs(parent, mode=0o700, exist_ok=True)
+
+    # 1. Fast Cache Lookup (SHA256 Content-Addressed LRU Cache)
+    if use_cache:
+        cpath = get_audio_cache_path(text, norm_voice, norm_rate, norm_pitch)
+        if os.path.isfile(cpath) and os.path.getsize(cpath) > 128:
+            try:
+                shutil.copyfile(cpath, output_path)
+                cwords = os.path.splitext(cpath)[0] + '.words.json'
+                words_cnt = 0
+                if os.path.isfile(cwords):
+                    owords = os.path.splitext(output_path)[0] + '.words.json'
+                    shutil.copyfile(cwords, owords)
+                    try:
+                        with open(cwords, 'r', encoding='utf-8') as wf:
+                            words_cnt = len(json.load(wf))
+                    except Exception:
+                        pass
+                return {
+                    'ok': True,
+                    'engine': 'cache',
+                    'bytes': os.path.getsize(output_path),
+                    'words': words_cnt,
+                    'cached': True,
+                }
+            except Exception:
+                pass
 
     last_err = ''
     if _ensure_edge_tts_importable():
@@ -210,6 +245,7 @@ async def synthesize_segment_async(
                     text=text,
                     voice=norm_voice,
                     rate=norm_rate,
+                    pitch=norm_pitch,
                     boundary="WordBoundary",
                 )
                 words = []
@@ -235,6 +271,18 @@ async def synthesize_segment_async(
                             atomic_write_json(words_path, words, mode=0o600)
                         except Exception:
                             pass
+
+                    # Store in SHA256 Audio Cache
+                    if use_cache:
+                        try:
+                            cpath = get_audio_cache_path(text, norm_voice, norm_rate, norm_pitch)
+                            shutil.copyfile(output_path, cpath)
+                            words_path = os.path.splitext(output_path)[0] + '.words.json'
+                            if os.path.isfile(words_path):
+                                shutil.copyfile(words_path, os.path.splitext(cpath)[0] + '.words.json')
+                        except Exception:
+                            pass
+
                     return {
                         'ok': True,
                         'engine': 'edge-tts',
@@ -321,6 +369,7 @@ class AsyncSynthServer:
                     text=text,
                     voice=req.get('voice', 'en-US-ChristopherNeural'),
                     rate=req.get('rate', '+0%'),
+                    pitch=req.get('pitch', '+0Hz'),
                     output_path=req.get('output', ''),
                     lang=req.get('lang', 'en'),
                     piper_model=req.get('piper_model', ''),
@@ -382,6 +431,7 @@ def request_synth(
     text_file: str = '',
     voice: str = 'en-US-ChristopherNeural',
     rate: str = '+0%',
+    pitch: str = '+0Hz',
     output_path: str = '',
     lang: str = 'en',
     piper_model: str = '',
@@ -396,6 +446,7 @@ def request_synth(
         'text_file': text_file,
         'voice': voice,
         'rate': rate,
+        'pitch': pitch,
         'output': output_path,
         'lang': lang,
         'piper_model': piper_model,
@@ -431,6 +482,7 @@ def request_synth(
             text=text,
             voice=voice,
             rate=rate,
+            pitch=pitch,
             output_path=output_path,
             lang=lang,
             piper_model=piper_model,
@@ -463,6 +515,7 @@ def main() -> int:
     parser.add_argument('--text-file', default='', help='Path to text file to synthesize')
     parser.add_argument('--voice', default='en-US-ChristopherNeural', help='Edge TTS voice ID')
     parser.add_argument('--rate', default='+0%', help='Speech rate offset (e.g. +10%)')
+    parser.add_argument('--pitch', default='+0Hz', help='Speech pitch offset (e.g. +5Hz)')
     parser.add_argument('--lang', default='en', help='Language code (en/de/ar) for Piper fallback')
     parser.add_argument('--piper-model', default='', help='Optional path to Piper .onnx model')
     parser.add_argument('--output', default='', help='Output audio file path')
@@ -487,6 +540,7 @@ def main() -> int:
         text_file=args.text_file,
         voice=args.voice,
         rate=args.rate,
+        pitch=args.pitch,
         output_path=args.output,
         lang=args.lang,
         piper_model=args.piper_model,

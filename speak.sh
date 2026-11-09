@@ -406,6 +406,10 @@ RAW_DE_RATE="${OVERRIDE_DE_RATE:-$(read_cfg_first "+30%" "$CONFIG_DIR/german_rat
 EN_RATE=$(normalize_rate "$RAW_EN_RATE" "+50%")
 AR_RATE=$(normalize_rate "$RAW_AR_RATE" "+30%")
 DE_RATE=$(normalize_rate "$RAW_DE_RATE" "+30%")
+TTS_PITCH="${OVERRIDE_PITCH:-$(read_cfg_first "+0Hz" "$CONFIG_DIR/pitch")}"
+if ! [[ "$TTS_PITCH" =~ ^[+-]?[0-9]+(Hz|%)?$ ]]; then
+    TTS_PITCH="+0Hz"
+fi
 
 SOURCE_LANG="${OVERRIDE_SOURCE_LANG:-$(read_cfg_first "auto" "$CONFIG_DIR/source_language" "$CONFIG_DIR/translate_from")}"
 case "${SOURCE_LANG,,}" in
@@ -527,17 +531,19 @@ generate_audio() {
     local voice="$1" rate="$2" text="$3" audio="$4" lang="${5:-en}"
     local tmp_stderr tmp_audio attempt delay
     local rate_args=()
-    [ -n "$rate" ] && [ "$rate" != "+0%" ] && [ "$rate" != "0%" ] && rate_args=(--rate="$rate")
+    [ -n "$rate" ] && [ "$rate" != "+0%" ] && [ "$rate" != "0%" ] && rate_args+=(--rate="$rate")
+    [ -n "$TTS_PITCH" ] && [ "$TTS_PITCH" != "+0Hz" ] && rate_args+=(--pitch="$TTS_PITCH")
     tmp_stderr=$(create_temp_file)
     tmp_audio=$(create_temp_file ".mp3")
 
     # 1. Fast path: Persistent Async Python Worker over UNIX socket ($SYNTH_SOCKET)
-    #    (uses in-memory edge_tts.Communicate and falls back to local Piper ONNX if available)
+    #    (uses in-memory edge_tts.Communicate, SHA256 cache, and falls back to local Piper ONNX if available)
     if [ -f "$SCRIPT_DIR/tts_synth_worker.py" ]; then
         if python3 "$SCRIPT_DIR/tts_synth_worker.py" \
             --text "$text" \
             --voice "$voice" \
             --rate "${rate:-+0%}" \
+            --pitch "${TTS_PITCH:-+0Hz}" \
             --lang "$lang" \
             --output "$tmp_audio" \
             --socket "$SYNTH_SOCKET" 2>"$tmp_stderr"; then
