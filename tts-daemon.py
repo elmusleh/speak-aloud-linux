@@ -213,6 +213,8 @@ class ThemeWatcher(QObject):
     @pyqtSlot(QDBusMessage)
     def on_setting_changed(self, msg: QDBusMessage):
         try:
+            from tts_text_processor import invalidate_theme_cache
+            invalidate_theme_cache()
             args = msg.arguments()
             ns = str(args[0]).lower() if len(args) > 0 else ''
             key = str(args[1]).lower() if len(args) > 1 else ''
@@ -315,7 +317,9 @@ class QtTTSDaemon:
         # Real-time desktop theme change listener (org.freedesktop.portal.Settings)
         try:
             from PyQt6.QtDBus import QDBusConnection
+            from tts_text_processor import invalidate_theme_cache
             self._theme_watcher = ThemeWatcher(lambda: (
+                invalidate_theme_cache(),
                 self.player_window.apply_theme(),
                 getattr(self.player_window, 'queue_window', None) and self.player_window.queue_window.apply_theme()
             ))
@@ -585,6 +589,8 @@ class QtTTSDaemon:
             k = str(key).lower()
             if 'interface' in ns or k in ('color-scheme', 'gtk-theme'):
                 self.log.info('Desktop theme signal received (%s.%s) — updating HUD', ns, k)
+                from tts_text_processor import invalidate_theme_cache
+                invalidate_theme_cache()
                 self.player_window.apply_theme()
                 if hasattr(self.player_window, 'queue_window'):
                     self.player_window.queue_window.apply_theme()

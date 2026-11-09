@@ -69,6 +69,8 @@ from tts_text_processor import (
     get_sanitized_env,
     get_status_path,
     get_work_dir,
+    invalidate_theme_cache,
+    parse_rate_multiplier,
     read_str_config,
 )
 
@@ -842,6 +844,15 @@ def get_queue_stylesheet(theme: str = 'dark') -> str:
                 font-size: 12px;
                 font-weight: 600;
             }
+            QLabel.queueEmptyTitle {
+                color: #1E293B;
+                font-weight: 600;
+                font-size: 12px;
+            }
+            QLabel.queueEmptySub {
+                color: #64748B;
+                font-size: 11px;
+            }
         """
 
     # Default Dark
@@ -937,6 +948,15 @@ def get_queue_stylesheet(theme: str = 'dark') -> str:
             color: #A5B4FC;
             font-size: 12px;
             font-weight: 600;
+        }
+        QLabel.queueEmptyTitle {
+            color: #F3F4F6;
+            font-weight: 600;
+            font-size: 12px;
+        }
+        QLabel.queueEmptySub {
+            color: #9CA3AF;
+            font-size: 11px;
         }
     """
 
@@ -1129,6 +1149,40 @@ class MPVTimelineController:
         else:
             phase = 'completed'
 
+        # Compute accurate language-aware speaking speed
+        active_lang = 'en'
+        active_rate_str = '+0%'
+        active_rate_mult = 1.0
+        active_idx = self.active_segment_index
+        if 0 <= active_idx < len(self.chunks_meta):
+            cm = self.chunks_meta[active_idx]
+            active_lang = cm.get('lang', 'en')
+            active_rate_str = cm.get('rate', '')
+            active_rate_mult = float(cm.get('rate_multiplier', 0.0) or 0.0)
+
+        if not active_rate_str or active_rate_mult <= 0.0:
+            rate_file = os.path.join(WORK_DIR, f'seg_{active_idx:03d}.rate')
+            if os.path.isfile(rate_file):
+                try:
+                    with open(rate_file, 'r', encoding='utf-8') as rf:
+                        active_rate_str = rf.read().strip()
+                except Exception:
+                    pass
+            if not active_rate_str:
+                try:
+                    from tts_text_processor import TTSSettingsStore
+                    st = TTSSettingsStore().load()
+                    active_rate_str = st.get(f'rate_{active_lang}', st.get('rate_en', '+0%'))
+                except Exception:
+                    active_rate_str = '+0%'
+            active_rate_mult = parse_rate_multiplier(active_rate_str)
+
+        effective_speed = round(active_rate_mult * self.speed, 2)
+        self.effective_speed = effective_speed
+        self.active_lang = active_lang
+        self.active_rate = active_rate_str
+        self.active_rate_mult = active_rate_mult
+
         return {
             'title': self.title,
             'current_time': self.current_time,
@@ -1138,6 +1192,10 @@ class MPVTimelineController:
             'is_loading': self.is_loading,
             'is_at_end': self.is_at_end,
             'speed': self.speed,
+            'effective_speed': effective_speed,
+            'active_lang': active_lang,
+            'active_rate': active_rate_str,
+            'rate_multiplier': active_rate_mult,
             'total_chunks': self.total_chunks,
             'completed_chunks': completed_count,
             'failed_chunks': failed_count,
@@ -1442,9 +1500,9 @@ class QueueManagerWindow(QWidget):
         h_layout.setContentsMargins(12, 8, 8, 8)
         h_layout.setSpacing(6)
 
-        icon_lbl = QLabel()
-        icon_lbl.setPixmap(lucide_pixmap('list-music', '#818CF8', 16))
-        h_layout.addWidget(icon_lbl)
+        self.header_icon_lbl = QLabel()
+        self.header_icon_lbl.setPixmap(lucide_pixmap('list-music', '#4F46E5' if getattr(self, '_current_theme', '') == 'light' else '#818CF8', 16))
+        h_layout.addWidget(self.header_icon_lbl)
 
         title_lbl = QLabel('Playback Queue')
         title_lbl.setObjectName('queueHeaderTitle')
@@ -1500,7 +1558,10 @@ class QueueManagerWindow(QWidget):
 
     def apply_theme(self, theme: Optional[str] = None):
         target = theme or get_effective_theme(QApplication.instance())
+        if target == getattr(self, '_current_theme', None) and getattr(self, '_theme_applied', False):
+            return
         self._current_theme = target
+        self._theme_applied = True
         self.setStyleSheet(get_queue_stylesheet(target))
         for btn in (
             getattr(self, 'btn_add', None),
@@ -1516,12 +1577,16 @@ class QueueManagerWindow(QWidget):
                     color = '#FFFFFF' if is_acc else ('#475569' if target == 'light' else '#D1D5DB')
                     btn.setIcon(lucide_icon(iname, color, 13))
 
+        if hasattr(self, 'header_icon_lbl'):
+            self.header_icon_lbl.setPixmap(lucide_pixmap('list-music', '#4F46E5' if target == 'light' else '#818CF8', 16))
+        self._rebuild_list()
+
     def _make_mini_btn(self, icon_name: str, tooltip: str, accent: bool = False) -> QPushButton:
         btn = QPushButton()
         btn.setProperty('class', 'queueMiniBtn queueMiniBtnAccent' if accent else 'queueMiniBtn')
         btn.setProperty('iconName', icon_name)
         btn.setProperty('isAccent', accent)
-        icon_color = '#FFFFFF' if accent else ('#475569' if self._current_theme == 'light' else '#D1D5DB')
+        icon_color = '#FFFFFF' if accent else ('#475569' if getattr(self, '_current_theme', '') == 'light' else '#D1D5DB')
         btn.setIcon(lucide_icon(icon_name, icon_color, 13))
         btn.setIconSize(QSize(13, 13))
         btn.setToolTip(tooltip)
@@ -1530,14 +1595,20 @@ class QueueManagerWindow(QWidget):
 
     def _restore_position(self):
         pos = load_ui_positions().get('queue_window')
-        screen = QApplication.primaryScreen()
-        avail = screen.availableGeometry() if screen else QRectF(0, 0, 1920, 1080)
+        primary = QApplication.primaryScreen()
+        avail = primary.availableGeometry() if primary else QRect(0, 0, 1920, 1080)
+        target_x = max(40, int(avail.right()) - 380)
+        target_y = max(180, int(avail.bottom()) - 520)
+
         if pos and isinstance(pos.get('x'), int) and isinstance(pos.get('y'), int):
-            x = max(int(avail.left()), min(pos['x'], int(avail.right()) - self.width()))
-            y = max(int(avail.top()), min(pos['y'], int(avail.bottom()) - 260))
-            self.move(x, y)
-        else:
-            self.move(max(40, int(avail.right()) - 380), max(180, int(avail.bottom()) - 520))
+            px, py = pos['x'], pos['y']
+            target_pt = QPoint(px, py)
+            screen = QApplication.screenAt(target_pt) or primary
+            if screen is not None:
+                s_avail = screen.availableGeometry()
+                target_x = max(int(s_avail.left()) + 10, min(px, int(s_avail.right()) - self.width() - 10))
+                target_y = max(int(s_avail.top()) + 10, min(py, int(s_avail.bottom()) - 260))
+        self.move(target_x, target_y)
 
     def load_from_disk(self, force: bool = False) -> bool:
         try:
@@ -1591,15 +1662,16 @@ class QueueManagerWindow(QWidget):
             el.setContentsMargins(12, 18, 12, 18)
             el.setSpacing(6)
             ic = QLabel()
-            ic.setPixmap(lucide_pixmap('list-music', '#4B5563', 32))
+            is_light = getattr(self, '_current_theme', '') == 'light'
+            ic.setPixmap(lucide_pixmap('list-music', '#94A3B8' if is_light else '#4B5563', 32))
             ic.setAlignment(Qt.AlignmentFlag.AlignCenter)
             el.addWidget(ic)
             t1 = QLabel('Queue is empty')
-            t1.setStyleSheet('color: #D1D5DB; font-weight: 600; font-size: 12px;')
+            t1.setProperty('class', 'queueEmptyTitle')
             t1.setAlignment(Qt.AlignmentFlag.AlignCenter)
             el.addWidget(t1)
             t2 = QLabel('Highlight text anywhere and click +\nor run: speak.sh --queue')
-            t2.setStyleSheet('color: #6B7280; font-size: 11px;')
+            t2.setProperty('class', 'queueEmptySub')
             t2.setAlignment(Qt.AlignmentFlag.AlignCenter)
             el.addWidget(t2)
             self.list_layout.addWidget(empty)
@@ -1785,11 +1857,12 @@ class FloatingPlayerWindow(QWidget):
         # Speed Pill Button (0.75x .. 2.0x)
         self.btn_speed = QPushButton(f'{self.controller.speed:g}x')
         self.btn_speed.setObjectName('speedPill')
-        self.btn_speed.setToolTip('Playback Speed (click to cycle, right-click for menu)')
+        self.btn_speed.setToolTip('Playback Speed (click to cycle, scroll to adjust, right-click for menu)')
         self.btn_speed.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.btn_speed.clicked.connect(self._cycle_speed)
         self.btn_speed.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.btn_speed.customContextMenuRequested.connect(self._show_speed_menu)
+        self.btn_speed.wheelEvent = self._on_speed_wheel
         header_row.addWidget(self.btn_speed)
 
         # Add Selection to Queue (+)
@@ -2004,9 +2077,25 @@ class FloatingPlayerWindow(QWidget):
         outer.addWidget(self.deck)
         self.apply_theme()
 
+    def _on_speed_wheel(self, event):
+        """Allow fine-grained speed adjustment via scroll wheel over the speed pill (+/- 0.05x)."""
+        delta = event.angleDelta().y()
+        if delta != 0:
+            step = 0.05 if delta > 0 else -0.05
+            new_spd = round(self.controller.speed + step, 2)
+            self.controller.set_speed(new_spd)
+            eff = round(new_spd * getattr(self.controller, 'active_rate_mult', 1.0), 2)
+            self.btn_speed.setText(f"{eff:g}x")
+            event.accept()
+            return
+        event.ignore()
+
     def apply_theme(self, theme: Optional[str] = None):
         target = theme or get_effective_theme(QApplication.instance())
+        if target == getattr(self, '_current_theme', None) and getattr(self, '_theme_applied', False):
+            return
         self._current_theme = target
+        self._theme_applied = True
         self.setStyleSheet(get_player_hud_stylesheet(target))
 
         icon_color = '#475569' if target == 'light' else '#9CA3AF'
@@ -2036,6 +2125,19 @@ class FloatingPlayerWindow(QWidget):
         if hasattr(self, 'btn_stop'):
             self.btn_stop.setIcon(lucide_icon('square', stop_color, 15))
 
+        # Re-polish any active transcript rows to match theme
+        if hasattr(self, '_transcript_rows'):
+            for row in self._transcript_rows:
+                try:
+                    row.style().unpolish(row)
+                    row.style().polish(row)
+                    lbl = row.findChild(QLabel)
+                    if lbl is not None:
+                        lbl.style().unpolish(lbl)
+                        lbl.style().polish(lbl)
+                except Exception:
+                    pass
+
     def _make_util_btn(self, icon_name: str, tooltip: str) -> QPushButton:
         btn = QPushButton()
         btn.setProperty('class', 'utilBtn')
@@ -2049,17 +2151,27 @@ class FloatingPlayerWindow(QWidget):
 
     def _restore_position(self):
         pos = load_ui_positions().get('floating_player')
-        screen = QApplication.primaryScreen()
-        avail = screen.availableGeometry() if screen else QRectF(0, 0, 1920, 1080)
+        primary = QApplication.primaryScreen()
+        avail = primary.availableGeometry() if primary else QRect(0, 0, 1920, 1080)
+        target_x = max(10, int(avail.right()) - self.width() - 28)
+        target_y = max(10, int(avail.bottom()) - 185)
         if pos and isinstance(pos.get('x'), int) and isinstance(pos.get('y'), int):
-            x = max(int(avail.left()) + 10, min(pos['x'], int(avail.right()) - self.width() - 10))
-            y = max(int(avail.top()) + 10, min(pos['y'], int(avail.bottom()) - 150))
-            self.move(x, y)
-        else:
-            # Default: bottom-right corner with comfortable margin (like obsidian-edge-tts)
-            self.move(int(avail.right()) - self.width() - 28, int(avail.bottom()) - 185)
+            px, py = pos['x'], pos['y']
+            target_pt = QPoint(px, py)
+            screen = QApplication.screenAt(target_pt) or primary
+            if screen is not None:
+                s_avail = screen.availableGeometry()
+                target_x = max(int(s_avail.left()) + 10, min(px, int(s_avail.right()) - self.width() - 10))
+                target_y = max(int(s_avail.top()) + 10, min(py, int(s_avail.bottom()) - 150))
+        self.move(target_x, target_y)
 
     def update_from_state(self, daemon_state: str):
+        try:
+            self._update_from_state_internal(daemon_state)
+        except Exception as exc:
+            logger.debug("update_from_state error: %s", exc)
+
+    def _update_from_state_internal(self, daemon_state: str):
         # Poll and adapt to OS or user theme changes (system default / dark / light)
         target_theme = get_effective_theme(QApplication.instance())
         if target_theme != getattr(self, '_current_theme', 'dark'):
@@ -2143,7 +2255,16 @@ class FloatingPlayerWindow(QWidget):
         title = data['title']
         self.title_lbl.setText(title[:17] + '…' if len(title) > 18 else title)
         self.title_lbl.setToolTip(title)
-        self.btn_speed.setText(f"{data['speed']:g}x")
+
+        eff_spd = data.get('effective_speed', data.get('speed', 1.0))
+        raw_spd = data.get('speed', 1.0)
+        a_lang = data.get('active_lang', 'en').upper()
+        a_rate = data.get('active_rate', '+0%')
+        self.btn_speed.setText(f"{eff_spd:g}x")
+        self.btn_speed.setToolTip(
+            f"Speaking Speed: {eff_spd:g}x [{a_lang} rate {a_rate} × player {raw_spd:g}x]\n"
+            f"Scroll wheel: ±0.05x | Click: cycle | Right-click: menu"
+        )
 
         if self.queue_window.is_playing_from_queue and self.queue_window.queue_items:
             q_idx = self.queue_window.current_index + 1
@@ -2203,7 +2324,9 @@ class FloatingPlayerWindow(QWidget):
 
         if tot_c > 0 and (comp_c + fail_c < tot_c or data['is_loading']):
             self._chunks_completed_at = 0.0
-            self.chunk_box.setVisible(True)
+            if not self.chunk_box.isVisible():
+                self.chunk_box.setVisible(True)
+                self.adjustSize()
             self.lbl_chunk_phase.setText(f'Generating chunks ({comp_c}/{tot_c})…')
             self.lbl_chunk_pct.setText(f'{pct}%')
             bar_w = max(4, int((self.chunk_bar_bg.width() or 290) * (pct / 100.0)))
@@ -2228,8 +2351,6 @@ class FloatingPlayerWindow(QWidget):
         # Sync Interactive Transcript Drawer if visible
         if self.transcript_box.isVisible():
             self._sync_transcript(sid, data.get('chunks_meta', []), data.get('active_segment_index', 0))
-
-        self.adjustSize()
 
     def _sync_transcript(self, session_id: str, chunks_meta: List[dict], active_idx: int):
         if session_id != self._transcript_session_id or len(self._transcript_rows) != len(chunks_meta):
@@ -2328,15 +2449,19 @@ class FloatingPlayerWindow(QWidget):
                 act_lbl = self._transcript_rows[active_idx].findChild(QLabel)
                 if act_lbl is not None and active_w_idx >= 0:
                     lang_tag = str(chunks_meta[active_idx].get('lang', 'en')).upper()
-                    parts = [f"<span style='color: #818CF8; font-weight: 600;'>{active_idx + 1}. [{lang_tag}]</span>"]
+                    is_light = getattr(self, '_current_theme', '') == 'light'
+                    hdr_color = '#4338CA' if is_light else '#818CF8'
+                    past_color = '#64748B' if is_light else '#9CA3AF'
+                    future_color = '#1E293B' if is_light else '#F3F4F6'
+                    parts = [f"<span style='color: {hdr_color}; font-weight: 600;'>{active_idx + 1}. [{lang_tag}]</span>"]
                     for widx, w in enumerate(words):
                         w_esc = html.escape(str(w.get('word', '')))
                         if widx < active_w_idx:
-                            parts.append(f"<span style='color: #9CA3AF;'>{w_esc}</span>")
+                            parts.append(f"<span style='color: {past_color};'>{w_esc}</span>")
                         elif widx == active_w_idx:
                             parts.append(f"<span style='background-color: #4F46E5; color: #FFFFFF; font-weight: 700; border-radius: 3px; padding: 1px 4px;'>{w_esc}</span>")
                         else:
-                            parts.append(f"<span style='color: #F3F4F6;'>{w_esc}</span>")
+                            parts.append(f"<span style='color: {future_color};'>{w_esc}</span>")
                     act_lbl.setText(' '.join(parts))
 
     def _sync_chunk_pills(self, statuses: List[str]):
@@ -2406,31 +2531,62 @@ class FloatingPlayerWindow(QWidget):
         else:
             next_speed = self.SPEED_STEPS[0]
         self.controller.set_speed(next_speed)
-        self.btn_speed.setText(f'{next_speed:g}x')
+        eff = round(next_speed * getattr(self.controller, 'active_rate_mult', 1.0), 2)
+        self.btn_speed.setText(f"{eff:g}x")
 
     def _show_speed_menu(self, pos: QPoint):
+        is_light = getattr(self, '_current_theme', '') == 'light'
+        bg_color = '#FFFFFF' if is_light else '#1E212B'
+        text_color = '#1E293B' if is_light else '#F3F4F6'
+        border_color = 'rgba(0, 0, 0, 0.12)' if is_light else 'rgba(255, 255, 255, 0.12)'
+        sub_color = '#64748B' if is_light else '#9CA3AF'
+
         menu = QMenu(self)
-        menu.setStyleSheet("""
-            QMenu {
-                background-color: #1E212B;
-                color: #F3F4F6;
-                border: 1px solid rgba(255,255,255,0.12);
-                border-radius: 6px;
+        menu.setStyleSheet(f"""
+            QMenu {{
+                background-color: {bg_color};
+                color: {text_color};
+                border: 1px solid {border_color};
+                border-radius: 8px;
                 padding: 4px;
-            }
-            QMenu::item {
+            }}
+            QMenu::item {{
                 padding: 5px 16px;
                 border-radius: 4px;
-                font-size: 12px;
-            }
-            QMenu::item:selected {
+                font-size: 11px;
+                color: {text_color};
+            }}
+            QMenu::item:selected {{
                 background-color: #6366F1;
                 color: #FFFFFF;
-            }
+            }}
+            QMenu::separator {{
+                height: 1px;
+                background: {border_color};
+                margin: 4px 8px;
+            }}
         """)
+        active_mult = getattr(self.controller, 'active_rate_mult', 1.0)
+        active_lang = getattr(self.controller, 'active_lang', 'en').upper()
+        active_rate = getattr(self.controller, 'active_rate', '+0%')
+
+        hdr = menu.addAction(f"Speaking Speed [{active_lang} {active_rate}]")
+        hdr.setEnabled(False)
+        menu.addSeparator()
+
         for s in [0.75, 1.0, 1.15, 1.25, 1.5, 1.75, 2.0]:
-            act = menu.addAction(f'{s:g}x' + ('  ✓' if abs(s - self.controller.speed) < 0.03 else ''))
-            act.triggered.connect(lambda _, spd=s: (self.controller.set_speed(spd), self.btn_speed.setText(f'{spd:g}x')))
+            eff = round(s * active_mult, 2)
+            chk = '  ✓' if abs(s - self.controller.speed) < 0.03 else ''
+            label = f"Player {s:g}x → Effective {eff:g}x{chk}"
+            act = menu.addAction(label)
+            act.triggered.connect(lambda _, spd=s, eff_s=eff: (
+                self.controller.set_speed(spd),
+                self.btn_speed.setText(f"{eff_s:g}x")
+            ))
+
+        menu.addSeparator()
+        tune_act = menu.addAction("Configure Per-Language Rates in Settings…")
+        tune_act.triggered.connect(self._on_open_settings)
         menu.exec(self.btn_speed.mapToGlobal(pos))
 
     def _toggle_queue_window(self):
@@ -2485,7 +2641,8 @@ class FloatingPlayerWindow(QWidget):
         new_idx = max(0, min(len(self.SPEED_STEPS) - 1, idx + direction))
         next_speed = self.SPEED_STEPS[new_idx]
         self.controller.set_speed(next_speed)
-        self.btn_speed.setText(f'{next_speed:g}x')
+        eff = round(next_speed * getattr(self.controller, 'active_rate_mult', 1.0), 2)
+        self.btn_speed.setText(f"{eff:g}x")
 
     def _toggle_transcript(self):
         vis = not self.transcript_box.isVisible()

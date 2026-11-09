@@ -732,6 +732,167 @@ def test_audiobook_bundler_and_duration_measurement(tmp_path, monkeypatch):
     assert out_book.stat().st_size > 500
 
 
+def test_parse_rate_multiplier():
+    from tts_text_processor import parse_rate_multiplier
+
+    assert parse_rate_multiplier('+50%') == 1.50
+    assert parse_rate_multiplier('+30%') == 1.30
+    assert parse_rate_multiplier('+10%') == 1.10
+    assert parse_rate_multiplier('+0%') == 1.00
+    assert parse_rate_multiplier('0%') == 1.00
+    assert parse_rate_multiplier('-20%') == 0.80
+    assert parse_rate_multiplier('-50%') == 0.50
+    assert parse_rate_multiplier('') == 1.00
+    assert parse_rate_multiplier('invalid') == 1.00
+
+
+def test_effective_speed_and_language_switching(tmp_path, monkeypatch):
+    from PyQt6.QtWidgets import QApplication
+    _app = QApplication.instance() or QApplication([])
+    from tts_hud import FloatingPlayerWindow, MPVTimelineController, QueueManagerWindow
+    import json
+
+    work_dir = tmp_path / 'work'
+    work_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr('tts_hud.WORK_DIR', str(work_dir))
+
+    manifest = {
+        'session_id': 'sess_speed_test',
+        'title': 'Multilingual Speed Test',
+        'chunks': [
+            {'index': 0, 'lang': 'ar', 'rate': '+20%', 'rate_multiplier': 1.20, 'est_duration': 3.0, 'text': 'مرحبا بالعالم'},
+            {'index': 1, 'lang': 'en', 'rate': '+50%', 'rate_multiplier': 1.50, 'est_duration': 3.0, 'text': 'Hello world'},
+        ],
+    }
+    (work_dir / 'manifest.json').write_text(json.dumps(manifest), encoding='utf-8')
+    (work_dir / 'seg_000.rate').write_text('+20%\n', encoding='utf-8')
+    (work_dir / 'seg_001.rate').write_text('+50%\n', encoding='utf-8')
+
+    ctrl = MPVTimelineController()
+    qwin = QueueManagerWindow()
+    hud = FloatingPlayerWindow(ctrl, qwin)
+
+    # 1. Active segment 0 (Arabic +20% with base player speed 1.0x -> 1.2x)
+    ctrl.active_segment_index = 0
+    ctrl.speed = 1.0
+    state0 = ctrl.refresh('PLAYING')
+    assert state0['active_lang'] == 'ar'
+    assert state0['rate_multiplier'] == 1.20
+    assert state0['effective_speed'] == 1.20
+
+    hud.update_from_state('PLAYING')
+    assert hud.btn_speed.text() == '1.2x'
+    assert '1.2x' in hud.btn_speed.toolTip()
+    assert 'AR' in hud.btn_speed.toolTip()
+
+    # 2. Advance to segment 1 (English +50% with base player speed 1.0x -> 1.5x)
+    ctrl.active_segment_index = 1
+    state1 = ctrl.refresh('PLAYING')
+    assert state1['active_lang'] == 'en'
+    assert state1['rate_multiplier'] == 1.50
+    assert state1['effective_speed'] == 1.50
+
+    hud.update_from_state('PLAYING')
+    assert hud.btn_speed.text() == '1.5x'
+    assert '1.5x' in hud.btn_speed.toolTip()
+    assert 'EN' in hud.btn_speed.toolTip()
+
+    # 3. Change base player speed to 1.2x -> English effective is round(1.50 * 1.2, 2) = 1.8x
+    ctrl.set_speed(1.2)
+    state1_boost = ctrl.refresh('PLAYING')
+    assert state1_boost['effective_speed'] == 1.80
+
+    hud.update_from_state('PLAYING')
+    assert hud.btn_speed.text() == '1.8x'
+
+
+def test_hud_theme_idempotence_and_word_karaoke(tmp_path, monkeypatch):
+    from PyQt6.QtWidgets import QApplication
+    _app = QApplication.instance() or QApplication([])
+    from tts_hud import FloatingPlayerWindow, MPVTimelineController, QueueManagerWindow
+    import json
+
+    ctrl = MPVTimelineController()
+    qwin = QueueManagerWindow()
+    hud = FloatingPlayerWindow(ctrl, qwin)
+
+    # Rapid theme switches must be idempotent and crash-free
+    for _ in range(3):
+        hud.apply_theme('light')
+        qwin.apply_theme('light')
+        assert hud._current_theme == 'light'
+        assert qwin._current_theme == 'light'
+
+        hud.apply_theme('dark')
+        qwin.apply_theme('dark')
+        assert hud._current_theme == 'dark'
+        assert qwin._current_theme == 'dark'
+
+    # Test word karaoke color contrast between dark and light themes
+    work_dir = tmp_path / 'work_karaoke'
+    work_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr('tts_hud.WORK_DIR', str(work_dir))
+
+    words_meta = [
+        {'word': 'High-performance', 'start': 0.0, 'end': 0.8},
+        {'word': 'speech', 'start': 0.8, 'end': 1.4},
+        {'word': 'synthesis', 'start': 1.4, 'end': 2.2},
+    ]
+    (work_dir / 'seg_000.words.json').write_text(json.dumps(words_meta), encoding='utf-8')
+
+    ctrl.session_id = 'karaoke_test'
+    ctrl.chunk_durations = [3.0]
+    ctrl.current_time = 1.0  # Spoken word is 'speech' (index 1)
+    chunks_meta = [{'text': 'High-performance speech synthesis', 'lang': 'en'}]
+
+    # In Dark theme:
+    hud.apply_theme('dark')
+    hud.transcript_box.setVisible(True)
+    hud._sync_transcript('karaoke_test', chunks_meta, active_idx=0)
+    lbl = hud._transcript_rows[0].findChild(type(hud.status_dot))
+    assert lbl is not None
+    dark_html = lbl.text()
+    assert '#4F46E5' in dark_html  # active word highlight background
+    assert '#9CA3AF' in dark_html  # past word in dark mode
+
+    # In Light theme:
+    hud.apply_theme('light')
+    hud._sync_transcript('karaoke_test', chunks_meta, active_idx=0)
+    lbl_light = hud._transcript_rows[0].findChild(type(hud.status_dot))
+    assert lbl_light is not None
+    light_html = lbl_light.text()
+    assert '#4F46E5' in light_html
+    assert '#64748B' in light_html  # past word in light mode (high contrast)
+
+
+def test_multi_screen_window_clamping(monkeypatch):
+    from PyQt6.QtWidgets import QApplication
+    _app = QApplication.instance() or QApplication([])
+    from tts_hud import FloatingPlayerWindow, MPVTimelineController, QueueManagerWindow
+
+    ctrl = MPVTimelineController()
+    qwin = QueueManagerWindow()
+    hud = FloatingPlayerWindow(ctrl, qwin)
+
+    # Mock an off-screen saved position
+    monkeypatch.setattr('tts_hud.load_ui_positions', lambda: {
+        'floating_player': {'x': 99999, 'y': -5000},
+        'queue_window': {'x': -2000, 'y': 99999},
+    })
+
+    hud._restore_position()
+    qwin._restore_position()
+
+    screen = QApplication.primaryScreen()
+    if screen is not None:
+        geom = screen.availableGeometry()
+        assert hud.x() < int(geom.right())
+        assert hud.y() >= int(geom.top())
+        assert qwin.x() >= int(geom.left())
+        assert qwin.y() < int(geom.bottom())
+
+
+
 
 
 

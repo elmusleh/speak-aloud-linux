@@ -660,6 +660,9 @@ for i in $(seq 0 $((SEG_COUNT - 1))); do
     elif [ "$LANG" = "de" ]; then VOICE="$DE_VOICE"; RATE="$DE_RATE"
     else VOICE="$EN_VOICE"; RATE="$EN_RATE"; fi
 
+    printf '%s\n' "$RATE" > "$WORK_DIR/seg_${PAD}.rate"
+    printf '%s\n' "$VOICE" > "$WORK_DIR/seg_${PAD}.voice"
+
     # If --speed was explicitly passed in GUI mode without per-language rate override, use _GUI_ cache key
     CACHE_RATE_TAG="$RATE"
     if [ -n "$OVERRIDE_SPEED" ] && [ -z "$OVERRIDE_EN_RATE" ] && [ -z "$OVERRIDE_AR_RATE" ] && [ -z "$OVERRIDE_DE_RATE" ]; then

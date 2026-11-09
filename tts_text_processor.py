@@ -118,6 +118,25 @@ def read_str_config(filename: str, default: str = '') -> str:
 _THEME_CACHE: Dict[str, Any] = {'time': 0.0, 'val': 'dark'}
 
 
+def invalidate_theme_cache() -> None:
+    """Invalidate cached system theme detection to force immediate re-query."""
+    _THEME_CACHE['time'] = 0.0
+
+
+def parse_rate_multiplier(rate_str: str) -> float:
+    """Convert a rate string (e.g. '+50%', '+30%', '-20%', '0%') to a multiplier float (e.g. 1.50, 1.30, 0.80, 1.00)."""
+    if not rate_str:
+        return 1.0
+    m = re.search(r'([+-]?\d+)', str(rate_str))
+    if not m:
+        return 1.0
+    try:
+        pct = float(m.group(1))
+        return max(0.2, min(4.0, round(1.0 + (pct / 100.0), 3)))
+    except Exception:
+        return 1.0
+
+
 def get_effective_theme(app: Any = None, max_age_sec: float = 3.0) -> str:
     """Determine effective UI theme ('dark' or 'light') matching system default or user override."""
     pref = read_str_config('ui_theme', 'auto').strip().lower()
@@ -128,48 +147,57 @@ def get_effective_theme(app: Any = None, max_age_sec: float = 3.0) -> str:
     if max_age_sec > 0 and (now - _THEME_CACHE['time']) < max_age_sec:
         return _THEME_CACHE['val']
 
-    resolved = 'dark'
+    resolved = _THEME_CACHE.get('val', 'dark')
+    theme_detected = False
 
-    # 1. Check GNOME / FreeDesktop interface color-scheme
-    try:
-        res = subprocess.run(
-            ['gsettings', 'get', 'org.gnome.desktop.interface', 'color-scheme'],
-            capture_output=True, text=True, timeout=0.15
-        )
-        out = res.stdout.strip().lower()
-        if 'prefer-dark' in out:
-            resolved = 'dark'
-        elif 'prefer-light' in out:
-            resolved = 'light'
-        else:
-            raise ValueError('color-scheme is default/unset')
-    except Exception:
-        # 2. Check Cinnamon / GNOME gtk-theme name
-        theme_found = False
-        for schema in ('org.cinnamon.desktop.interface', 'org.gnome.desktop.interface'):
-            try:
-                res = subprocess.run(
-                    ['gsettings', 'get', schema, 'gtk-theme'],
-                    capture_output=True, text=True, timeout=0.15
-                )
-                theme_name = res.stdout.strip().lower()
-                if 'dark' in theme_name:
+    # 1. Primary on Cinnamon/Linux Mint: Check Cinnamon desktop themes
+    for schema in ('org.cinnamon.desktop.interface', 'org.gnome.desktop.interface', 'org.cinnamon.theme'):
+        try:
+            key = 'name' if schema == 'org.cinnamon.theme' else 'gtk-theme'
+            res = subprocess.run(
+                ['gsettings', 'get', schema, key],
+                capture_output=True, text=True, timeout=0.6
+            )
+            if res.returncode == 0:
+                t_name = res.stdout.strip().strip("'\"").lower()
+                if t_name:
+                    if 'dark' in t_name or 'black' in t_name:
+                        resolved = 'dark'
+                        theme_detected = True
+                        break
+                    elif 'light' in t_name or 'mint-y' in t_name or 'adwaita' in t_name or 'arc' in t_name or 'yaru' in t_name:
+                        resolved = 'light'
+                        theme_detected = True
+                        break
+        except Exception:
+            pass
+
+    # 2. Check FreeDesktop / GNOME color-scheme portal
+    if not theme_detected:
+        try:
+            res = subprocess.run(
+                ['gsettings', 'get', 'org.gnome.desktop.interface', 'color-scheme'],
+                capture_output=True, text=True, timeout=0.6
+            )
+            if res.returncode == 0:
+                out = res.stdout.strip().lower()
+                if 'prefer-dark' in out:
                     resolved = 'dark'
-                    theme_found = True
-                    break
-                elif 'light' in theme_name or 'adwaita' in theme_name or 'mint-y' in theme_name:
+                    theme_detected = True
+                elif 'prefer-light' in out:
                     resolved = 'light'
-                    theme_found = True
-                    break
-            except Exception:
-                pass
+                    theme_detected = True
+        except Exception:
+            pass
 
-        # 3. Check Qt application palette background lightness
-        if not theme_found and app is not None:
-            try:
-                resolved = 'dark' if app.palette().window().color().lightness() < 128 else 'light'
-            except Exception:
-                resolved = 'dark'
+    # 3. Check Qt application palette background lightness
+    if not theme_detected and app is not None:
+        try:
+            lightness = app.palette().window().color().lightness()
+            resolved = 'dark' if lightness < 128 else 'light'
+            theme_detected = True
+        except Exception:
+            pass
 
     _THEME_CACHE['time'] = now
     _THEME_CACHE['val'] = resolved
@@ -1521,20 +1549,29 @@ def process_and_write_segments(
         return 0
 
     manifest_chunks = []
+    settings_data = TTSSettingsStore().load()
     for idx, (lang, chunk_text) in enumerate(chunks):
         pad = f'{idx:03d}'
+        rate_key = f'rate_{lang}'
+        seg_rate = settings_data.get(rate_key, settings_data.get('rate_en', '+0%'))
+        rate_mult = parse_rate_multiplier(seg_rate)
+
         with open(os.path.join(workdir, f'seg_{pad}.txt'), 'w', encoding='utf-8') as f:
             f.write(chunk_text)
         with open(os.path.join(workdir, f'seg_{pad}.lang'), 'w', encoding='utf-8') as f:
             f.write(lang)
+        with open(os.path.join(workdir, f'seg_{pad}.rate'), 'w', encoding='utf-8') as f:
+            f.write(seg_rate)
         with open(os.path.join(workdir, f'seg_{pad}.status'), 'w', encoding='utf-8') as f:
             f.write('pending')
 
-        est_dur = round(max(1.2, len(chunk_text) / 14.5), 2)
+        est_dur = round(max(1.2, (len(chunk_text) / 14.5) / max(0.5, rate_mult)), 2)
         manifest_chunks.append({
             'id': idx,
             'pad': pad,
             'lang': lang,
+            'rate': seg_rate,
+            'rate_multiplier': rate_mult,
             'text': chunk_text,
             'chars': len(chunk_text),
             'est_duration': est_dur,
