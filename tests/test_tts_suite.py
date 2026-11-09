@@ -755,6 +755,9 @@ def test_effective_speed_and_language_switching(tmp_path, monkeypatch):
     work_dir = tmp_path / 'work'
     work_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr('tts_hud.WORK_DIR', str(work_dir))
+    cfg_dir = tmp_path / 'cfg'
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr('tts_hud.CONFIG_DIR', str(cfg_dir))
 
     manifest = {
         'session_id': 'sess_speed_test',
@@ -890,6 +893,44 @@ def test_multi_screen_window_clamping(monkeypatch):
         assert hud.y() >= int(geom.top())
         assert qwin.x() >= int(geom.left())
         assert qwin.y() < int(geom.bottom())
+
+
+def test_daemon_tick_resilience(tmp_path, monkeypatch):
+    import importlib.util
+    from PyQt6.QtWidgets import QApplication
+    _app = QApplication.instance() or QApplication([])
+
+    spec = importlib.util.spec_from_file_location('tts_daemon', os.path.join(SCRIPT_DIR, 'tts-daemon.py'))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    st_file = tmp_path / 'status'
+    st_file.write_text('IDLE\n', encoding='utf-8')
+    monkeypatch.setattr(mod, 'STATUS_FILE', str(st_file))
+
+    # Initialize a mock daemon instance
+    daemon = mod.QtTTSDaemon.__new__(mod.QtTTSDaemon)
+    daemon._state = 'IDLE'
+    daemon._playing_accum_sec = 0.0
+    daemon.log = mod.logging.getLogger('test-daemon')
+    daemon.tray = type('MockTray', (), {'setToolTip': lambda *a: None, 'setIcon': lambda *a: None})()
+    daemon._icons = {'IDLE': None}
+    daemon.controller = type('MockCtrl', (), {'speed': 1.0})()
+    daemon.ducker = type('MockDucker', (), {'duck': lambda *a: None, 'unduck': lambda *a: None})()
+    daemon.player_window = type('MockPlayerWin', (), {'update_from_state': lambda *a: None})()
+    daemon._sync_media_keys = lambda *a: None
+    daemon._check_bluetooth_audio = lambda: None
+
+    # Ticking repeatedly when state == _state must NEVER raise UnboundLocalError
+    daemon._tick_internal()
+    daemon._tick_internal()
+
+    # Transitioning from PLAYING to IDLE must also run cleanly
+    daemon._state = 'PLAYING'
+    st_file.write_text('IDLE\n', encoding='utf-8')
+    daemon._tick_internal()
+    assert daemon._state == 'IDLE'
+
 
 
 

@@ -5,8 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PATH="$SCRIPT_DIR/bin:$HOME/.local/bin:$PATH"
 
 # ── Ensure tray & floating player daemon is running ───────────────────────────
-if ! pgrep -f "tts-daemon.py" > /dev/null 2>&1; then
-    setsid python3 "$SCRIPT_DIR/tts-daemon.py" > /dev/null 2>&1 < /dev/null &
+if ! systemctl --user is-active --quiet speak-aloud-daemon.service 2>/dev/null && ! pgrep -f "tts-daemon.py" > /dev/null 2>&1; then
+    systemctl --user start speak-aloud-daemon.service 2>/dev/null || setsid python3 "$SCRIPT_DIR/tts-daemon.py" > /dev/null 2>&1 < /dev/null &
 fi
 
 CONFIG_DIR="$HOME/.config/tts_settings"
@@ -774,9 +774,8 @@ if [ "$TTS_MODE" = "play" ]; then
     echo "PLAYING" > "$TTS_STATUS_FILE"
     rm -f "$MPV_SOCKET"
 
-    SAVED_SPEED=$(tr -cd '0-9.' < "$CONFIG_DIR/global_speed" 2>/dev/null || echo "")
-    INITIAL_SPEED="${OVERRIDE_SPEED:-${SAVED_SPEED:-1.0}}"
-    # Validate speed float (0.5 to 3.0)
+    INITIAL_SPEED="${OVERRIDE_SPEED:-1.0}"
+    # Validate speed float (0.25 to 3.0)
     if ! awk -v s="$INITIAL_SPEED" 'BEGIN{exit !(s+0 >= 0.25 && s+0 <= 3.0)}' 2>/dev/null; then
         INITIAL_SPEED="1.0"
     fi

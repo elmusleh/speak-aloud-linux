@@ -12,6 +12,7 @@ import fcntl
 import logging
 import logging.handlers
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -126,7 +127,26 @@ class NativeX11MediaKeyListener:
         except Exception:
             pass
 
+        # Explicitly declare 64-bit function prototypes to prevent pointer truncation / segfaults
         x11.XOpenDisplay.restype = ctypes.c_void_p
+        x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+        x11.XDefaultScreen.restype = ctypes.c_int
+        x11.XDefaultScreen.argtypes = [ctypes.c_void_p]
+        x11.XRootWindow.restype = ctypes.c_ulong
+        x11.XRootWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        x11.XKeysymToKeycode.restype = ctypes.c_ubyte
+        x11.XKeysymToKeycode.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+        x11.XGrabKey.restype = ctypes.c_int
+        x11.XGrabKey.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_uint, ctypes.c_ulong, ctypes.c_int, ctypes.c_int, ctypes.c_int]
+        x11.XFlush.restype = ctypes.c_int
+        x11.XFlush.argtypes = [ctypes.c_void_p]
+        x11.XPending.restype = ctypes.c_int
+        x11.XPending.argtypes = [ctypes.c_void_p]
+        x11.XNextEvent.restype = ctypes.c_int
+        x11.XNextEvent.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        x11.XCloseDisplay.restype = ctypes.c_int
+        x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+
         disp = x11.XOpenDisplay(None)
         if not disp:
             return
@@ -141,7 +161,6 @@ class NativeX11MediaKeyListener:
 
         try:
             screen = x11.XDefaultScreen(disp)
-            x11.XRootWindow.restype = ctypes.c_ulong
             root = x11.XRootWindow(disp, screen)
         except Exception:
             try:
@@ -441,14 +460,17 @@ class QtTTSDaemon:
 
     def _toggle_player(self):
         if self.player_window.isVisible():
+            self.player_window.manually_opened = False
             self.player_window.hide()
         else:
+            self.player_window.manually_opened = True
             self.player_window.user_dismissed_session = ''
             self.player_window.show()
             self.player_window.raise_()
 
     def _toggle_transcript_from_tray(self):
         if not self.player_window.isVisible():
+            self.player_window.manually_opened = True
             self.player_window.user_dismissed_session = ''
             self.player_window.show()
             self.player_window.raise_()
@@ -468,6 +490,12 @@ class QtTTSDaemon:
         self.player_window.raise_()
 
     def _tick(self):
+        try:
+            self._tick_internal()
+        except Exception as exc:
+            self.log.error('Unexpected error in daemon _tick: %s', exc, exc_info=True)
+
+    def _tick_internal(self):
         try:
             with open(STATUS_FILE, 'r', encoding='utf-8') as f:
                 state = f.read().strip()
@@ -493,8 +521,8 @@ class QtTTSDaemon:
                 except Exception:
                     pass
 
+        prev_state = self._state
         if state != self._state:
-            prev_state = self._state
             self._state = state
             label = _STATE_LABELS.get(state, '○  Ready')
             self.tray.setToolTip(f'Speak a Loud — {label}')

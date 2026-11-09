@@ -983,7 +983,7 @@ class MPVTimelineController:
         self.is_paused: bool = False
         self.is_loading: bool = False
         self.is_at_end: bool = False
-        self.speed: float = read_float_config('global_speed', 1.0)
+        self.speed: float = 1.0
         self.had_active_session: bool = False
 
     def mpv_command(self, cmd: list, timeout: float = 0.08) -> Optional[dict]:
@@ -1039,6 +1039,7 @@ class MPVTimelineController:
                     self.current_time = 0.0
                     self.is_at_end = False
                     self.had_active_session = True
+                    self.speed = 1.0
             except Exception:
                 pass
 
@@ -1806,6 +1807,7 @@ class FloatingPlayerWindow(QWidget):
         self._transcript_rows: List[QFrame] = []
         self._segment_words: Dict[int, List[Dict[str, Any]]] = {}
         self._current_theme: str = ''
+        self.manually_opened: bool = False
         self.sleep_timer_seconds: int = 0
         self.sleep_timer_mode: int = 0
         self._last_sleep_tick: float = time.time()
@@ -2244,7 +2246,7 @@ class FloatingPlayerWindow(QWidget):
             if not self.isVisible():
                 self.show()
                 self.raise_()
-        elif not is_active and not should_stay_for_replay:
+        elif not is_active and not should_stay_for_replay and not getattr(self, 'manually_opened', False):
             if self.isVisible() and not self.queue_window.isVisible():
                 self.hide()
 
@@ -2510,6 +2512,7 @@ class FloatingPlayerWindow(QWidget):
             self.controller.toggle_pause()
 
     def _on_stop_clicked(self):
+        self.manually_opened = False
         self.user_dismissed_session = self.controller.session_id
         self.queue_window.is_playing_from_queue = False
         self.queue_window.save_to_disk()
@@ -2517,6 +2520,7 @@ class FloatingPlayerWindow(QWidget):
         self.hide()
 
     def _on_close_clicked(self):
+        self.manually_opened = False
         self.user_dismissed_session = self.controller.session_id
         save_ui_position('floating_player', self.x(), self.y())
         self.hide()
