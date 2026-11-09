@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
 """
-TTS Tray Daemon — cross-desktop tray icon with media keys, notifications, and logging.
+TTS Tray & Floating HUD Daemon — cross-desktop tray icon, floating on-screen
+player popup (FloatingPlayerUI), chunked progress monitor (ChunkedProgressUI),
+playback queue manager (QueueManagerUI), media keys, and structured logging.
 
-Uses pystray for the tray icon (works on Cinnamon, GNOME, KDE, XFCE).
-Listens to media keys only while TTS is actively playing.
-Sends desktop notifications on state changes.
-Logs to ~/.local/share/speak-aloud/daemon.log with rotation.
-
-Auto-started on login via ~/.config/autostart/tts-daemon.desktop.
+Auto-started on login via ~/.config/autostart/tts-daemon.desktop or by speak.sh.
 Single-instance enforced via /tmp/tts-daemon.lock.
 """
 
@@ -15,12 +12,11 @@ import fcntl
 import logging
 import logging.handlers
 import os
+import signal
 import subprocess
 import sys
 import threading
 import time
-
-from PIL import Image, ImageDraw
 
 # Optional media-key support
 try:
@@ -29,14 +25,16 @@ try:
 except ImportError:
     PYNPUT_AVAILABLE = False
 
-import pystray
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
 
-SCRIPT_DIR  = os.path.dirname(os.path.abspath(__file__))
-STATUS_FILE = '/tmp/tts-status'
-LOCK_FILE   = '/tmp/tts-daemon.lock'
-MPV_SOCKET  = '/tmp/speak-aloud-mpv.sock'
-LOG_DIR     = os.path.expanduser('~/.local/share/speak-aloud')
-LOG_FILE    = os.path.join(LOG_DIR, 'daemon.log')
+TEMP_DIR = os.environ.get('TMPDIR', '/tmp')
+STATUS_FILE = os.path.join(TEMP_DIR, 'tts-status')
+LOCK_FILE = os.path.join(TEMP_DIR, 'tts-daemon.lock')
+MPV_SOCKET = os.path.join(TEMP_DIR, 'speak-aloud-mpv.sock')
+LOG_DIR = os.path.expanduser('~/.local/share/speak-aloud')
+LOG_FILE = os.path.join(LOG_DIR, 'daemon.log')
 
 _STATE_LABELS = {
     'IDLE':       '○  Ready',
@@ -46,203 +44,259 @@ _STATE_LABELS = {
     'PAUSED':     '⏸  Paused',
 }
 
-_NOTIFICATIONS = {
-    'GENERATING': ('TTS: Generating audio…', 'emblem-synchronizing'),
-    'PLAYING':    ('TTS: Now speaking', 'audio-volume-high'),
-    'PAUSED':     ('TTS: Paused', 'media-playback-pause'),
-    'IDLE':       ('TTS: Finished speaking', 'audio-speakers'),
-    'RETRYING':   ('TTS: Retrying…', 'network-error'),
-}
-
 
 def _setup_logging():
     os.makedirs(LOG_DIR, exist_ok=True)
     logger = logging.getLogger('tts-daemon')
     logger.setLevel(logging.DEBUG)
-
-    fh = logging.handlers.RotatingFileHandler(
-        LOG_FILE, maxBytes=1_048_576, backupCount=1
-    )
-    fh.setFormatter(logging.Formatter(
-        '%(asctime)s [%(levelname)s] %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    ))
-
-    ch = logging.StreamHandler(sys.stderr)
-    ch.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
-
-    logger.addHandler(fh)
-    logger.addHandler(ch)
+    if not logger.handlers:
+        fh = logging.handlers.RotatingFileHandler(
+            LOG_FILE, maxBytes=1_048_576, backupCount=1
+        )
+        fh.setFormatter(logging.Formatter(
+            '%(asctime)s [%(levelname)s] %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        ))
+        ch = logging.StreamHandler(sys.stderr)
+        ch.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
+        logger.addHandler(fh)
+        logger.addHandler(ch)
     return logger
 
 
-def _icon_idle():
-    """Solid blue circle — ready / idle state."""
-    img = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    d.ellipse([2, 2, 62, 62], fill=(33, 150, 243, 255))      # bright blue
-    return img
-
-
-def _icon_generating():
-    """Purple circle with white spinner arc — generating audio."""
-    img = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    d.ellipse([2, 2, 62, 62], fill=(156, 39, 176, 255))      # purple
-    # white spinner arc
-    d.pieslice([14, 14, 50, 50], start=0, end=270, fill=(255, 255, 255, 255))
-    return img
-
-
-def _icon_playing():
-    """Green circle with white play triangle — actively playing."""
-    img = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    d.ellipse([2, 2, 62, 62], fill=(76, 175, 80, 255))        # green
-    # white play triangle centered
-    d.polygon([(24, 18), (24, 46), (44, 32)], fill=(255, 255, 255, 255))
-    return img
-
-
-def _icon_paused():
-    """Orange circle with white pause bars — paused."""
-    img = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    d.ellipse([2, 2, 62, 62], fill=(255, 87, 34, 255))        # orange
-    # two white pause bars
-    d.rectangle([22, 18, 30, 46], fill=(255, 255, 255, 255))
-    d.rectangle([34, 18, 42, 46], fill=(255, 255, 255, 255))
-    return img
-
-
-def _notify(title, icon='audio-speakers'):
-    # Notifications disabled — tray icon only
-    pass
-
-
-def _send_mpv(cmd):
+def _acquire_lock(log):
     try:
-        payload = '{"command":' + str(cmd).replace("'", '"') + '}\n'
-        subprocess.run(
-            ['socat', '-', MPV_SOCKET],
-            input=payload.encode(), capture_output=True, timeout=1
-        )
-    except Exception:
-        pass
+        fd = open(LOCK_FILE, 'w')
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fd.write(str(os.getpid()))
+        fd.flush()
+        return fd
+    except (IOError, OSError):
+        log.error('Already running — exiting')
+        sys.exit(0)
 
 
-class TTSDaemon:
+# ── PyQt6 Tray + Floating HUD Implementation ──────────────────────────────────
+
+def _make_tray_qicon(state: str):
+    from PyQt6.QtCore import QPointF, QRectF, Qt
+    from PyQt6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap, QPolygonF
+
+    px = QPixmap(64, 64)
+    px.fill(QColor(0, 0, 0, 0))
+    p = QPainter(px)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setPen(Qt.PenStyle.NoPen)
+
+    if state in ('GENERATING', 'RETRYING'):
+        p.setBrush(QColor(156, 39, 176))
+        p.drawEllipse(2, 2, 60, 60)
+        pen = QPen(QColor(255, 255, 255), 6)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        p.drawArc(QRectF(16, 16, 32, 32), 0, 270 * 16)
+    elif state == 'PLAYING':
+        p.setBrush(QColor(16, 185, 129))
+        p.drawEllipse(2, 2, 60, 60)
+        p.setBrush(QColor(255, 255, 255))
+        tri = QPolygonF([QPointF(24, 18), QPointF(24, 46), QPointF(46, 32)])
+        p.drawPolygon(tri)
+    elif state == 'PAUSED':
+        p.setBrush(QColor(249, 115, 22))
+        p.drawEllipse(2, 2, 60, 60)
+        p.setBrush(QColor(255, 255, 255))
+        p.drawRoundedRect(QRectF(21, 18, 8, 28), 2, 2)
+        p.drawRoundedRect(QRectF(35, 18, 8, 28), 2, 2)
+    else:
+        p.setBrush(QColor(99, 102, 241))
+        p.drawEllipse(2, 2, 60, 60)
+        p.setBrush(QColor(255, 255, 255))
+        p.drawEllipse(22, 22, 20, 20)
+
+    p.end()
+    return QIcon(px)
+
+
+class QtTTSDaemon:
     def __init__(self):
+        from PyQt6.QtCore import QTimer
+        from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
+        from tts_hud import FloatingPlayerWindow, MPVTimelineController, QueueManagerWindow, save_ui_position
+
         self.log = _setup_logging()
+        self._lock_fd = _acquire_lock(self.log)
+        self.log.info('QtTTSDaemon started (PID %d)', os.getpid())
+
+        self.app = QApplication(sys.argv)
+        self.app.setQuitOnLastWindowClosed(False)
+        self.app.setApplicationName('Speak a Loud')
+
         self._state = 'IDLE'
-        self._last_notify = None
         self._listener = None
-        self._lock_fd = None
-        self._running = True
+        self._save_ui_position = save_ui_position
 
         self._icons = {
-            'IDLE':       _icon_idle(),
-            'GENERATING': _icon_generating(),
-            'PLAYING':    _icon_playing(),
-            'PAUSED':     _icon_paused(),
+            'IDLE':       _make_tray_qicon('IDLE'),
+            'GENERATING': _make_tray_qicon('GENERATING'),
+            'RETRYING':   _make_tray_qicon('RETRYING'),
+            'PLAYING':    _make_tray_qicon('PLAYING'),
+            'PAUSED':     _make_tray_qicon('PAUSED'),
         }
 
-        self._acquire_lock()
-        self.log.info('Daemon started (PID %d)', os.getpid())
+        self.controller = MPVTimelineController()
+        self.queue_window = QueueManagerWindow()
+        self.player_window = FloatingPlayerWindow(self.controller, self.queue_window)
 
-        self._build_icon()
-        self._start_poll()
+        self._build_tray(QSystemTrayIcon, QMenu)
+
+        # Poll status & mpv IPC every 150ms for smooth timeline scrubber updates
+        self.timer = QTimer()
+        self.timer.timeout.connect(self._tick)
+        self.timer.start(150)
+
+        # Handle SIGINT / SIGTERM gracefully
+        signal.signal(signal.SIGINT, lambda *_: self._on_quit())
+        signal.signal(signal.SIGTERM, lambda *_: self._on_quit())
 
         if PYNPUT_AVAILABLE:
             self.log.debug('pynput available')
         else:
             self.log.warning('pynput not installed; media keys disabled')
 
-    def _acquire_lock(self):
-        try:
-            fd = open(LOCK_FILE, 'w')
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            fd.write(str(os.getpid()))
-            fd.flush()
-            self._lock_fd = fd
-        except (IOError, OSError):
-            self.log.error('Already running — exiting')
-            sys.exit(0)
+    def _build_tray(self, QSystemTrayIcon, QMenu):
+        self.tray = QSystemTrayIcon(self._icons['IDLE'], self.app)
+        self.tray.setToolTip('Speak a Loud — ○ Ready')
 
-    def _build_icon(self):
-        menu = pystray.Menu(
-            pystray.MenuItem('Show Settings', self._on_show),
-            pystray.Menu.SEPARATOR,
-            pystray.MenuItem('Play / Pause', self._on_pause),
-            pystray.MenuItem('Stop', self._on_stop),
-            pystray.MenuItem('Seek -10s', self._on_seek_back),
-            pystray.MenuItem('Seek +10s', self._on_seek_forward),
-            pystray.Menu.SEPARATOR,
-            pystray.MenuItem('Quit', self._on_quit),
-        )
+        menu = QMenu()
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #16181E;
+                color: #F3F4F6;
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 8px;
+                padding: 5px;
+            }
+            QMenu::item {
+                padding: 6px 18px;
+                border-radius: 5px;
+                font-size: 12px;
+            }
+            QMenu::item:selected {
+                background-color: #6366F1;
+                color: #FFFFFF;
+            }
+            QMenu::separator {
+                height: 1px;
+                background: rgba(255, 255, 255, 0.08);
+                margin: 4px 8px;
+            }
+        """)
 
-        self._icon = pystray.Icon(
-            'tts-daemon',
-            icon=self._icons['IDLE'],
-            title='Speak a Loud — ○ Ready',
-            menu=menu
-        )
+        act_speak = menu.addAction('Speak Selection (Super+S)')
+        act_speak.triggered.connect(lambda: self._run('speak.sh'))
 
-    def _start_poll(self):
-        def loop():
-            while self._running:
-                self._tick()
-                time.sleep(0.5)
-        threading.Thread(target=loop, daemon=True).start()
+        act_queue_add = menu.addAction('Add Selection to Queue')
+        act_queue_add.triggered.connect(self.queue_window.enqueue_current_selection)
+
+        menu.addSeparator()
+
+        act_player = menu.addAction('Show / Hide Floating Player')
+        act_player.triggered.connect(self._toggle_player)
+
+        act_queue = menu.addAction('Show / Hide Playback Queue')
+        act_queue.triggered.connect(self.player_window._toggle_queue_window)
+
+        act_reset_pos = menu.addAction('Reset Floating Player Position')
+        act_reset_pos.triggered.connect(self._reset_player_position)
+
+        menu.addSeparator()
+
+        act_pause = menu.addAction('Play / Pause (Super+P)')
+        act_pause.triggered.connect(self._on_pause)
+
+        act_stop = menu.addAction('Stop (Shift+Super+S)')
+        act_stop.triggered.connect(self._on_stop)
+
+        act_back = menu.addAction('Seek -10s')
+        act_back.triggered.connect(self._on_seek_back)
+
+        act_fwd = menu.addAction('Seek +10s')
+        act_fwd.triggered.connect(self._on_seek_forward)
+
+        menu.addSeparator()
+
+        act_settings = menu.addAction('TTS Settings… (Super+T)')
+        act_settings.triggered.connect(self._on_show_settings)
+
+        act_quit = menu.addAction('Quit')
+        act_quit.triggered.connect(self._on_quit)
+
+        self.tray.setContextMenu(menu)
+        self.tray.activated.connect(self._on_tray_activated)
+        self.tray.show()
+
+    def _on_tray_activated(self, reason):
+        from PyQt6.QtWidgets import QSystemTrayIcon
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            self._toggle_player()
+
+    def _toggle_player(self):
+        if self.player_window.isVisible():
+            self.player_window.hide()
+        else:
+            self.player_window.user_dismissed_session = ''
+            self.player_window.show()
+            self.player_window.raise_()
+
+    def _reset_player_position(self):
+        from PyQt6.QtWidgets import QApplication
+        screen = QApplication.primaryScreen()
+        if screen:
+            avail = screen.availableGeometry()
+            x = int(avail.right()) - self.player_window.width() - 28
+            y = int(avail.bottom()) - 185
+            self.player_window.move(x, y)
+            self._save_ui_position('floating_player', x, y)
+        self.player_window.user_dismissed_session = ''
+        self.player_window.show()
+        self.player_window.raise_()
 
     def _tick(self):
         try:
-            with open(STATUS_FILE) as f:
+            with open(STATUS_FILE, 'r', encoding='utf-8') as f:
                 state = f.read().strip()
         except (FileNotFoundError, OSError):
             state = 'IDLE'
 
-        # Self-correction: if status is active but speak.sh is gone, force IDLE
+        # Self-correction: if status is active but neither speak.sh nor mpv socket is present, force IDLE
         if state in ('PLAYING', 'GENERATING', 'PAUSED', 'RETRYING'):
-            try:
-                result = subprocess.run(
-                    ['pgrep', '-f', 'speak.sh'],
-                    capture_output=True, timeout=1
-                )
-                if result.returncode != 0:
-                    state = 'IDLE'
-                    try:
-                        with open(STATUS_FILE, 'w') as f:
-                            f.write('IDLE')
-                    except OSError:
-                        pass
-                    self.log.info('Self-correct: speak.sh gone — forcing IDLE')
-            except Exception:
-                pass
+            if not os.path.exists(MPV_SOCKET):
+                try:
+                    result = subprocess.run(
+                        ['pgrep', '-f', 'speak.sh'],
+                        capture_output=True, timeout=0.5
+                    )
+                    if result.returncode != 0:
+                        state = 'IDLE'
+                        try:
+                            with open(STATUS_FILE, 'w', encoding='utf-8') as f:
+                                f.write('IDLE')
+                        except OSError:
+                            pass
+                        self.log.info('Self-correct: speak.sh & mpv gone — forcing IDLE')
+                except Exception:
+                    pass
 
         if state != self._state:
             self._state = state
             label = _STATE_LABELS.get(state, '○  Ready')
-            self._icon.title = f'Speak a Loud — {label}'
-            new_icon = self._icons.get(state, self._icons['IDLE'])
-            self._icon.icon = new_icon
-            # Aggressive refresh: hide → show forces indicator recreation
-            if hasattr(self._icon, '_hide') and hasattr(self._icon, '_show'):
-                self._icon._hide()
-                self._icon._show()
-            elif hasattr(self._icon, '_update_icon'):
-                self._icon._update_icon()
+            self.tray.setToolTip(f'Speak a Loud — {label}')
+            self.tray.setIcon(self._icons.get(state, self._icons['IDLE']))
             self.log.info('State: %s — icon updated', state)
-            self._do_notify(state)
             self._sync_media_keys(state)
 
-    def _do_notify(self, state):
-        if state == self._last_notify:
-            return
-        self._last_notify = state
-        info = _NOTIFICATIONS.get(state)
-        if info:
-            _notify(info[0], info[1])
+        # Update Floating Player HUD & Queue Manager
+        self.player_window.update_from_state(state)
 
     def _sync_media_keys(self, state):
         if not PYNPUT_AVAILABLE:
@@ -292,39 +346,33 @@ class TTSDaemon:
             subprocess.Popen(
                 ['bash', path],
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
+                stderr=subprocess.DEVNULL,
             )
         except Exception as e:
             self.log.error('Failed to run %s: %s', script, e)
 
-    def _on_show(self, icon, item):
-        if subprocess.run(['pgrep', '-f', 'tts-settings.sh'],
-                         capture_output=True).returncode == 0:
+    def _on_show_settings(self):
+        if subprocess.run(['pgrep', '-f', 'tts-settings'], capture_output=True).returncode == 0:
             return
         self._run('tts-settings.sh')
 
-    def _on_pause(self, icon=None, item=None):
-        self._run('speak-pause.sh')
+    def _on_pause(self):
+        self.controller.toggle_pause()
 
-    def _on_stop(self, icon=None, item=None):
-        self._run('speak-stop.sh')
-        try:
-            with open(STATUS_FILE, 'w') as f:
-                f.write('IDLE')
-        except OSError:
-            pass
+    def _on_stop(self):
+        self.player_window._on_stop_clicked()
 
-    def _on_seek_back(self, icon=None, item=None):
+    def _on_seek_back(self):
         self.log.info('Seek -10s')
-        _send_mpv(['seek', '-10'])
+        self.controller.jump_backward(10.0)
 
-    def _on_seek_forward(self, icon=None, item=None):
+    def _on_seek_forward(self):
         self.log.info('Seek +10s')
-        _send_mpv(['seek', '10'])
+        self.controller.jump_forward(10.0)
 
-    def _on_quit(self, icon, item):
+    def _on_quit(self):
         self.log.info('Quit requested')
-        self._running = False
+        self.timer.stop()
         self._stop_keys()
         if self._lock_fd:
             try:
@@ -332,14 +380,15 @@ class TTSDaemon:
                 self._lock_fd.close()
             except OSError:
                 pass
-        self._icon.stop()
+        self.tray.hide()
+        self.app.quit()
 
     def run(self):
-        self._icon.run()
+        sys.exit(self.app.exec())
 
 
 def main():
-    TTSDaemon().run()
+    QtTTSDaemon().run()
 
 
 if __name__ == '__main__':

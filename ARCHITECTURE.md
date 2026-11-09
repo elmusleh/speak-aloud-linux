@@ -1,33 +1,23 @@
 # System Architecture
 
-Speak a Loud Universal is a shell-first TTS system. The core logic lives entirely in Bash scripts, with `speak.sh` acting as the orchestrator. A lightweight YAD-based settings dialog (`tts-settings.sh`) provides configuration, while keyboard shortcuts offer instant access from anywhere on the desktop.
+Speak a Loud Universal combines a fast shell/Python synthesis pipeline with a persistent PyQt6 system tray and Floating On-Screen Player HUD (`tts-daemon.py` + `tts_hud.py`).
 
 ## 🧱 Component Overview
 
 ### 1. The Orchestrator (`speak.sh`)
-This script is the "brain" of the operation. It handles:
-- **Language Detection:** Uses a Python regex bridge to split text into English, Arabic, and German segments.
-- **Speech Generation:** Calls `edge-tts` to convert text segments into MP3 files in `/tmp/speak-aloud-work/`.
-- **Audio Routing:** Progressive playback — starts `mpv` as soon as the first segment is ready and appends remaining segments via IPC while generation continues.
+Handles text acquisition (X11 primary selection, Office `WM_CLASS` + `Ctrl+C`, Wayland `wl-paste`, AT-SPI `get-selected-text.py`, clipboard fallback), optional translation (`translate_text.py`), parallel `edge-tts` synthesis with caching (`~/.cache/speak-aloud/`), and progressive `mpv` playback.
 
-### 2. The Settings GUI (`tts-settings.sh`)
-A YAD-based form for selecting voices, adjusting per-language rates, configuring translation, and setting pause-at-punctuation options. All values are written to `~/.config/tts_settings/` so `speak.sh` sees them immediately.
+### 2. Smart Text Processor & Trilingual Segmenter (`tts_text_processor.py`)
+Single-pass Python processor that:
+- Filters Markdown formatting, YAML frontmatter, raw URLs, code blocks, and converts comparison/dimension symbols (`>=`, `<=`, `320 x 240`, `≈`).
+- Splits text into English, Arabic, and German segments using deterministic `langdetect` + German function-word verification.
+- Uses **Fast-First-Chunk splitting** (`seg_000` <= 220 chars, subsequent chunks <= 480 chars) so playback begins in under a second.
+- Writes `/tmp/speak-aloud-work/manifest.json` and `seg_XXX.status` files for real-time HUD tracking.
 
-### 3. The Audio Engine (`mpv`)
-`mpv` is used not just for playback, but as a controllable server. By launching with `--input-ipc-server=/tmp/speak-aloud-mpv.sock`, other scripts can:
-- Cycle pause/resume (`speak-pause.sh`).
-- Stop playback (`speak-stop.sh`).
+### 3. Floating Player HUD, Chunk Progress & Queue Manager (`tts_hud.py` & `tts-daemon.py`)
+- **`MPVTimelineController`**: Communicates directly with `/tmp/speak-aloud-mpv.sock` over `socket.AF_UNIX` (sub-millisecond latency) and calculates a unified global timeline across all segment files (`filesize / 6000.0` CBR 48kbps MP3) for seamless cross-segment seeking, `-10s` / `+10s` jumps, live speed changes, and post-playback **Replay**.
+- **`FloatingPlayerWindow`**: Always-on-top, frameless, draggable HUD with timeline scrubber, transport controls, speed pill, MP3 export, and collapsible **Chunked Generation Progress** pills.
+- **`QueueManagerWindow`**: Draggable companion window managing `/tmp/speak-aloud-queue.json` with auto-advance, loop mode, item reordering, and one-click selection queueing.
 
-## 📡 Inter-Process Communication (IPC)
-
-The system uses three primary IPC methods:
-1.  **CLI Arguments:** `tts-settings.sh` and keyboard shortcuts pass user settings to `speak.sh` via command-line flags.
-2.  **Unix Sockets:** Playback control (pause/stop/seek) is handled via the `mpv` JSON-IPC socket at `/tmp/speak-aloud-mpv.sock`.
-3.  **Status File:** `speak.sh` writes its current state (`IDLE`, `GENERATING`, `PLAYING`, `PAUSED`) to `/tmp/tts-status`, which the tray daemon polls to update its icon, send notifications, and activate media-key listeners.
-
-## 📂 File System Usage
-
-- **`/tmp/speak-aloud-work/`**: Temporary storage for generated MP3 segments and language metadata.
-- **`/tmp/speak-aloud-mpv.sock`**: The Unix socket for `mpv` control.
-- **`~/.config/tts_settings/`**: Persistent storage for voice, rate, and pause preferences.
-- **`tts-shared.json`**: Shared voice catalog and default settings (read by both `tts-settings.sh` and `speak.sh`).
+### 4. Settings & Studio GUI (`tts-settings.py` / `tts-settings.sh`)
+Tabbed PyQt6 dark-slate configuration studio for voices, per-language rates, live voice previews, Markdown filtering rules, translation, Quick Speak/Export bench, and cache management (with YAD fallback via `tts-settings.sh --yad`).

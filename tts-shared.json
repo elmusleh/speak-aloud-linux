@@ -3,50 +3,90 @@
     "english": [
       {
         "id": "en-US-ChristopherNeural",
-        "name": "Christopher (US)"
+        "name": "Christopher (US · Male)"
+      },
+      {
+        "id": "en-US-AndrewMultilingualNeural",
+        "name": "Andrew Multilingual (US · Male)"
+      },
+      {
+        "id": "en-US-AvaMultilingualNeural",
+        "name": "Ava Multilingual (US · Female)"
+      },
+      {
+        "id": "en-US-AriaNeural",
+        "name": "Aria (US · Female)"
       },
       {
         "id": "en-US-GuyNeural",
-        "name": "Guy (US)"
+        "name": "Guy (US · Male)"
+      },
+      {
+        "id": "en-US-JennyNeural",
+        "name": "Jenny (US · Female)"
       },
       {
         "id": "en-GB-RyanNeural",
-        "name": "Ryan (UK)"
+        "name": "Ryan (UK · Male)"
+      },
+      {
+        "id": "en-GB-SoniaNeural",
+        "name": "Sonia (UK · Female)"
       }
     ],
     "arabic": [
       {
         "id": "ar-SA-HamedNeural",
-        "name": "Hamed (Saudi)"
+        "name": "Hamed (Saudi · Male)"
       },
       {
         "id": "ar-SA-ZariyahNeural",
-        "name": "Zariyah (Saudi)"
+        "name": "Zariyah (Saudi · Female)"
       },
       {
         "id": "ar-EG-SalmaNeural",
-        "name": "Salma (Egypt)"
+        "name": "Salma (Egypt · Female)"
+      },
+      {
+        "id": "ar-EG-ShakirNeural",
+        "name": "Shakir (Egypt · Male)"
+      },
+      {
+        "id": "ar-AE-FatimaNeural",
+        "name": "Fatima (UAE · Female)"
+      },
+      {
+        "id": "ar-AE-HamdanNeural",
+        "name": "Hamdan (UAE · Male)"
       }
     ],
     "german": [
       {
         "id": "de-DE-ConradNeural",
-        "name": "Conrad (DE)"
+        "name": "Conrad (DE · Male)"
       },
       {
         "id": "de-DE-KatjaNeural",
-        "name": "Katja (DE)"
+        "name": "Katja (DE · Female)"
       },
       {
         "id": "de-DE-KillianNeural",
-        "name": "Killian (DE)"
+        "name": "Killian (DE · Male)"
+      },
+      {
+        "id": "de-DE-SeraphinaMultilingualNeural",
+        "name": "Seraphina Multilingual (DE · Female)"
+      },
+      {
+        "id": "de-DE-FlorianMultilingualNeural",
+        "name": "Florian Multilingual (DE · Male)"
       }
     ]
   },
   "source_languages": [
     {
       "code": "auto",
-      "name": "Auto-detect"
+      "name": "Auto-detect (EN / AR / DE)"
     },
     {
       "code": "en",
@@ -144,12 +184,19 @@
     "rate": 50,
     "arabic_rate": 30,
     "german_rate": 30,
+    "global_speed": 1.0,
     "source_language": "auto",
     "translate_enabled": false,
     "translate_provider": "deepl",
     "translate_target": "",
     "translate_api_key": "",
-    "pause_punctuation": true,
-    "pause_delay_ms": 100
+    "pause_punctuation": false,
+    "pause_delay_ms": 100,
+    "show_floating_player": true,
+    "enable_replay": true,
+    "filter_markdown": true,
+    "filter_urls": true,
+    "filter_code": false,
+    "replace_symbols": true
   }
 }

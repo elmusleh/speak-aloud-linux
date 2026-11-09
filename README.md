@@ -1,112 +1,61 @@
 # Speak a Loud Universal
 
-A production-grade Text-to-Speech (TTS) solution for Linux with seamless trilingual (English, Arabic, and German) support. Speak a Loud Universal allows you to highlight text anywhere on your screen and hear it spoken aloud using high-quality neural voices from Microsoft Edge, with zero API keys required.
+A desktop Text-to-Speech (TTS) studio for Linux with seamless trilingual (**English, Arabic, and German**) support, a draggable **Floating On-Screen Player HUD** (inspired by `obsidian-edge-tts`), real-time **Chunked Generation Progress**, a **Playback Queue Manager**, and **Smart Markdown & Technical Text Filtering** — powered by Microsoft Edge neural voices (`edge-tts`) with zero API keys required.
 
-## 🚀 Features
+## 🚀 Key Features
 
-- **Trilingual Intelligence:** Automatically detects English, Arabic, and German segments within the same text and switches voices seamlessly — Arabic by script, German by word-level analysis (umlauts and vocabulary markers).
-- **YAD Settings GUI:** A lightweight settings dialog for voice selection, per-language speed control, and pause configuration.
-- **System Tray:** Cross-desktop tray icon (via `pystray`) with play/pause, stop, seek (±10s), and settings. Media keys control TTS while speaking, then release back to your music player.
-- **Desktop Notifications:** Toast alerts on state changes (generating, playing, paused, finished).
-- **Audio Caching:** Generated segments are cached in `~/.cache/speak-aloud` (keyed by voice + rate + text), so repeated text plays instantly. Stale entries are pruned automatically after 30 days; a toolbar button clears the cache manually.
-- **Parallel Generation:** All segments are synthesized concurrently with automatic retry on connection issues and rate limits.
-- **Save Audio:** Export the last playback as a single MP3 with `--output file.mp3` to `speak.sh`.
-- **Global Shortcuts:** Deep system integration with global keyboard shortcuts (Super+S to speak, Super+P to pause, Shift+Super+S to stop).
-- **Real-time Speed Control:** Adjust playback speed on-the-fly without restarting the audio via `speak-pause.sh` or keyboard shortcuts.
-- **Single Source of Truth:** All settings live in `~/.config/tts_settings/` — `tts-settings.sh` and `speak.sh` always agree.
-- **Wayland & X11 Support:** Works across different display servers using `wl-clipboard` and `xsel`.
-- **High-Quality Neural Voices:** Uses the `edge-tts` engine for natural-sounding speech.
-- **Minimal Footprint:** Fast, lightweight, and uses standard system components like `mpv`.
+- **Floating On-Screen Player HUD (`tts_hud.py`)**:
+  - Draggable, frameless, always-on-top dark-slate HUD that appears automatically when speaking starts and remembers its screen position.
+  - **Unified Timeline Scrubber**: Displays elapsed time (`0:16`), total duration (`0:43`), and an interactive click-and-drag seek bar across all segments.
+  - **Manual Transport Controls**: Jump Backward `-10s`, Play / Pause / **Replay at End**, Jump Forward `+10s`, Stop, and live **Speed Selector Pill (`0.75x` – `2.0x`)**.
+  - **One-Click MP3 Export & Queue Controls**: Save the current speech as MP3 (`⬇`), add highlighted text to the queue (`+`), or open the Playback Queue (`☰`).
+- **Chunked Generation Progress (`ChunkedProgressUI`)**:
+  - Visualizes multi-chunk neural synthesis in real time with overall percentage, progress bar, and per-chunk status pills (`1 ✓`, `2 ⟳`, `3 ○`).
+  - **Fast-First-Chunk Optimization**: Caps the initial chunk (`seg_000`) at ~220 characters so speech begins in under a second while longer chunks (~480 chars) synthesize in the background.
+- **Playback Queue Manager (`QueueManagerUI`)**:
+  - Companion floating window to queue multiple selections (`speak.sh --queue` or `+` button), reorder items (Move Up / Down), toggle Loop, jump to any queued passage, or clear the queue.
+- **Smart Markdown & Technical Text Filtering (`tts_text_processor.py`)**:
+  - Automatically cleans Markdown syntax (YAML frontmatter, headings, bold/italics, `[links](url)`, tables, HTML comments), strips raw URLs, normalizes bullet lists into clean sentences, and converts math/comparison symbols (`320 x 240` → `320 by 240`, `>=`, `<=`, `≈`) into natural speech.
+- **Trilingual Intelligence (EN / AR / DE)**:
+  - Detects English, Arabic (with embedded number merging), and German segments within the same passage and switches voices seamlessly without misclassifying English technical jargon.
+- **Modern Settings & Studio Test Bench (`tts-settings.py`)**:
+  - Tabbed PyQt6 dark-slate settings window with voice dropdowns, live **Test EN / AR / DE** buttons, per-language rate sliders, Markdown filter toggles, translation settings, a **Quick Speak & MP3 Export Bench**, and audio cache management.
 
 ## 🛠️ Dependencies
 
-The project relies on several system-level packages. The included `install.sh` script will attempt to install these for you on Debian/Ubuntu-based systems (like Linux Mint).
+- **Python 3** + **PyQt6** (`python3-pyqt6`, `python3-pyqt6.qtsvg`)
+- **edge-tts 7.3.1+** (installed via `pipx`)
+- **mpv** (included locally in `bin/` or system `mpv`) + **socat**
+- **xsel** / **wl-clipboard** + **xdotool** / **xprop** (for selection & office app support)
 
-### Local Dependencies
-- **mpv** - Included locally in `bin/` directory (no system installation required)
-
-### System Packages
-- **Python 3:** Used by `speak.sh` for text segmentation and by the tray daemon.
-- **edge-tts:** The core neural speech engine (installed via `pipx`).
-- **xsel** / **wl-clipboard:** For reading the primary selection (highlighted text).
-- **socat:** For Inter-Process Communication with the audio player.
-- **yad:** For the settings GUI dialog.
-- **pystray** + **Pillow:** For the system-tray icon.
-- **pynput:** (Optional) For media-key support while TTS is playing.
-- **ffmpeg:** (Optional) For gapless MP3 export with `--output`.
-
-Install manually if needed:
-```bash
-sudo apt install xsel yad socat wl-clipboard python3-pil
-python3 -m pip install --user pystray pynput
-```
-
-## 📦 Installation
+## 📦 Installation & Setup
 
 ```bash
-# Clone the repository
-git clone https://github.com/YOUR_USERNAME/speak-aloud-linux.git ~/speak-aloud-linux
-cd ~/speak-aloud-linux
-
-# Run the installer
+cd speak-aloud-linux
 chmod +x install.sh
 ./install.sh
 ```
 
-The installer handles system packages, `edge-tts` setup via `pipx`, configuration defaults, file permissions, and (with your confirmation) keyboard shortcuts.
-
-## ⌨️ Keyboard Shortcuts
-
-### Automated Setup (Cinnamon / Linux Mint)
-
-The installer asks whether to register the keyboard shortcuts automatically. Answer `Y` and all five shortcuts below are configured for you — re-running the installer updates them in place without creating duplicates.
-
-### Manual Setup (other desktops)
-
-If you skipped the automated setup or use a different desktop environment, add these custom shortcuts manually (e.g., Mint Menu → System Settings → Keyboard → Shortcuts):
+## ⌨️ Keyboard Shortcuts & CLI Usage
 
 | Action | Command | Recommended Shortcut |
 | :--- | :--- | :--- |
 | **Speak Selection** | `./speak.sh` | `Super + S` |
 | **Pause / Resume** | `./speak-pause.sh` | `Super + P` |
 | **Stop Speech** | `./speak-stop.sh` | `Shift + Super + S` |
-| **TTS Settings (CLI)** | `./tts-settings.sh` | `Super + T` |
-**Note:** Automated setup only works with the Cinnamon desktop environment. Use absolute paths to the scripts when configuring shortcuts manually. `speak-stop.sh` stops only this app's playback via its IPC socket — it never touches other mpv instances (e.g., a video you're watching).
+| **TTS Settings & Studio** | `./tts-settings.sh` | `Super + T` |
+| **Add Selection to Queue** | `./speak.sh --queue` | *(Optional shortcut or `+` on HUD)* |
 
-A standalone `setup-tts-shortcuts.sh` is also provided to (re)register just the Speak/Stop shortcuts; it is idempotent and updates existing entries by name.
-
-## 🖥️ Usage
-
-### Using the Shortcut
-Highlight text in any application (browser, PDF viewer, terminal) and press your assigned shortcut (`Super + S`). The script detects the languages and starts speaking immediately. Pressing it again while audio is playing stops the old playback and starts the new selection.
-
-### CLI options (`speak.sh`)
+### CLI Examples
 ```bash
-./speak.sh --text "Hello مرحبا Grüße"          # speak explicit text
-./speak.sh --output out.mp3                    # also export concatenated audio
-./speak.sh --en-voice en-GB-RyanNeural \
-           --de-rate "+40%" --speed 1.25       # one-off overrides
+./speak.sh --text "Hello مرحبا Grüße"          # Speak explicit trilingual text
+./speak.sh --queue                             # Add current selection to Playback Queue
+./speak.sh --output out.mp3                    # Speak and export concatenated MP3
+./speak.sh --generate-only --output out.mp3    # Generate MP3 silently without playing
 ```
 
-### Settings architecture
-All user settings are plain files in `~/.config/tts_settings/` (`voice`, `arabic_voice`, `german_voice`, `rate`, `arabic_rate`, `german_rate`, `global_speed`, `pause_punctuation`, `pause_delay_ms`). `tts-settings.sh` and `speak.sh` read and write the same files — `tts-shared.json` holds the voice catalog and defaults.
+## 🧪 Testing
 
-## ❓ Troubleshooting
-
-
-### Wayland Selection Issues
-If you are on Wayland and the app cannot grab highlighted text, ensure `wl-clipboard` is installed:
 ```bash
-sudo apt install wl-clipboard
+python3 -m pytest -v tests/test_tts_suite.py
 ```
-
-### Missing mpv dependency
-If you see "TTS Error: Missing dependency: mpv", verify the local binary exists:
-```bash
-ls -la bin/mpv
-```
-The mpv binary is included locally in the `bin/` directory and should be automatically used by `speak.sh`.
-
----
-
-*Powered by Microsoft Edge TTS and mpv.*

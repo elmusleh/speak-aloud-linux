@@ -34,7 +34,7 @@ else
 fi
 
 # Install packages with validation
-PACKAGES=(pipx xsel yad socat wl-clipboard python3-pil python3-pip file)
+PACKAGES=(pipx xsel yad socat wl-clipboard python3-pil python3-pip python3-pyqt6 python3-pyqt6.qtsvg file)
 [ -n "$MPV_INSTALL" ] && PACKAGES+=("$MPV_INSTALL")
 echo "Installing packages: ${PACKAGES[*]}"
 
@@ -59,7 +59,7 @@ fi
 echo -e "${BOLD}[2/6] Installing Python packages...${RESET}"
 pipx ensurepath --force > /dev/null 2>&1
 export PATH="$HOME/.local/bin:$PATH"
-pipx install edge-tts 2>/dev/null || pipx upgrade edge-tts
+pipx install 'edge-tts>=7.3.1' 2>/dev/null || pipx upgrade edge-tts
 
 # Verify edge-tts is actually callable
 if command -v edge-tts &>/dev/null; then
@@ -94,7 +94,9 @@ mkdir -p ~/.config/tts_settings
 [ ! -f ~/.config/tts_settings/rate ]         && echo "+50%"                    > ~/.config/tts_settings/rate
 [ ! -f ~/.config/tts_settings/arabic_rate ]  && echo "+30%"                    > ~/.config/tts_settings/arabic_rate
 [ ! -f ~/.config/tts_settings/german_rate ]  && echo "+30%"                    > ~/.config/tts_settings/german_rate
-[ ! -f ~/.config/tts_settings/global_speed ] && echo "1.5"                     > ~/.config/tts_settings/global_speed
+[ ! -f ~/.config/tts_settings/global_speed ] && echo "1.0"                     > ~/.config/tts_settings/global_speed
+[ ! -f ~/.config/tts_settings/show_floating_player ] && echo "yes"             > ~/.config/tts_settings/show_floating_player
+[ ! -f ~/.config/tts_settings/enable_replay ]        && echo "yes"             > ~/.config/tts_settings/enable_replay
 
 echo -e "${GREEN}✓ Config files ready at ~/.config/tts_settings/${RESET}"
 echo ""
@@ -105,6 +107,11 @@ chmod +x "$SCRIPT_DIR/speak.sh"
 chmod +x "$SCRIPT_DIR/speak-pause.sh"
 chmod +x "$SCRIPT_DIR/speak-stop.sh"
 chmod +x "$SCRIPT_DIR/tts-settings.sh"
+chmod +x "$SCRIPT_DIR/tts-settings.py"
+chmod +x "$SCRIPT_DIR/tts-daemon.py"
+chmod +x "$SCRIPT_DIR/tts_hud.py"
+chmod +x "$SCRIPT_DIR/tts_text_processor.py"
+chmod +x "$SCRIPT_DIR/get-selected-text.py"
 chmod +x "$SCRIPT_DIR/setup-tts-shortcuts.sh"
 echo -e "${GREEN}✓ Scripts are executable${RESET}"
 echo ""
